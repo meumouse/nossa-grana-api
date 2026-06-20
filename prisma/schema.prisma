@@ -149,6 +149,13 @@ model WorkspaceSettings {
   variableLookback  Int     @default(3)
   weekStartsOnMonday Boolean @default(true)
 
+  // --- Importação por IA (sobrescreve os defaults de env por workspace) ---
+  // null em qualquer campo = usa o valor do env. A chave é guardada cifrada
+  // (AES-256-GCM) e NUNCA é devolvida ao cliente — só um booleano "set".
+  llmProvider       String? // ex.: "openai"
+  llmModel          String? // ex.: "gpt-4o"
+  llmApiKey         String? // ciphertext da chave do provider
+
   updatedAt DateTime @updatedAt
 }
 
@@ -247,10 +254,18 @@ model Account {
   creditLimit       Decimal? @db.Decimal(18, 2)
   statementClosingDay Int?   // dia de fechamento da fatura (1-31)
   paymentDueDay       Int?   // dia de vencimento da fatura (1-31)
+  // juros por atraso no pagamento da fatura (taxa mensal, ex.: 0.0899 = 8,99% a.m.)
+  lateInterestRate    Decimal? @db.Decimal(9, 6)
   // conta de onde a fatura é paga por padrão (corrente)
   paymentAccountId    String?
   paymentAccount      Account?  @relation("CardPaymentAccount", fields: [paymentAccountId], references: [id])
   cardsPaidByThis     Account[] @relation("CardPaymentAccount")
+
+  // --- Específico de CONTA BANCÁRIA (type = CHECKING/SAVINGS) ---
+  // LIS / cheque especial: limite de crédito rotativo da conta.
+  overdraftLimit        Decimal? @db.Decimal(18, 2)
+  // juros do limite/conta (taxa mensal, ex.: 0.08 = 8% a.m.)
+  overdraftInterestRate Decimal? @db.Decimal(9, 6)
 
   // --- Específico de FINANCIAMENTO/EMPRÉSTIMO (type = LOAN) ---
   loanPrincipal       Decimal? @db.Decimal(18, 2) // valor financiado

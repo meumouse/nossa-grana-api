@@ -29,7 +29,11 @@ const baseSchema = z.object({
   creditLimit: z.coerce.number().optional(),
   statementClosingDay: z.number().int().min(1).max(31).optional(),
   paymentDueDay: z.number().int().min(1).max(31).optional(),
+  lateInterestRate: z.coerce.number().min(0).optional(),
   paymentAccountId: z.string().optional(),
+  // Conta bancária (LIS / cheque especial)
+  overdraftLimit: z.coerce.number().min(0).optional(),
+  overdraftInterestRate: z.coerce.number().min(0).optional(),
   // Financiamento
   loanPrincipal: z.coerce.number().optional(),
   loanInstallments: z.number().int().positive().optional(),
