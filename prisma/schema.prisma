@@ -1,0 +1,745 @@
+// ============================================================================
+//  Finanças Pessoais & Familiares — Schema Prisma (PostgreSQL)
+// ----------------------------------------------------------------------------
+//  Convenções globais
+//  - id:        cuid() (estável, ordenável, seguro p/ expor em URL)
+//  - clientId:  UUID gerado no DISPOSITIVO (idempotência de sync offline-first)
+//  - createdAt/updatedAt: auditoria + base p/ sync incremental (delta por updatedAt)
+//  - deletedAt: SOFT DELETE — nunca apague linhas; sync precisa propagar remoções
+//  - Dinheiro:  Decimal(18,2) p/ valores; Decimal(18,8) p/ quantidade/preço de ativo
+//               NUNCA Float. Decimal evita erro de arredondamento em somas.
+//  - Tudo é "escopado" por workspaceId. Toda query do backend DEVE filtrar por ele.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+//  1. IDENTIDADE & AUTENTICAÇÃO
+// ============================================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  avatarUrl     String?
+  passwordHash  String? // null se usar apenas OAuth
+  locale        String    @default("pt-BR")
+  timezone      String    @default("America/Sao_Paulo")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  memberships        Member[]
+  preferences        UserPreferences?
+  sessions           Session[]
+  oauthAccounts      OAuthAccount[]
+  createdTransactions Transaction[]   @relation("TransactionCreatedBy")
+  sentInvitations    Invitation[]     @relation("InvitationInvitedBy")
+  activities         ActivityLog[]
+}
+
+// Sessão por refresh-token (auth stateless: access JWT curto + refresh rotativo)
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken String   @unique
+  deviceId     String? // identifica o dispositivo p/ sync e revogação seletiva
+  userAgent    String?
+  ip           String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  revokedAt    DateTime?
+
+  @@index([userId])
+}
+
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider          String // "google", "apple", ...
+  providerAccountId String
+  createdAt         DateTime @default(now())
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model UserPreferences {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  theme               Theme   @default(SYSTEM)
+  defaultWorkspaceId  String?
+  hideBalances        Boolean @default(false) // "modo privacidade" (esconde valores)
+  notificationsPush   Boolean @default(true)
+  notificationsEmail  Boolean @default(false)
+  // preferências livres adicionais (ordem de cards do dashboard, etc.)
+  ui                  Json?
+
+  updatedAt DateTime @updatedAt
+}
+
+enum Theme {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+// ============================================================================
+//  2. WORKSPACES (PERFIS) & COMPARTILHAMENTO FAMILIAR
+//     Um "perfil" = um Workspace. Pode ser pessoal (1 membro) ou compartilhado
+//     (família). Um User pode pertencer a vários workspaces simultaneamente.
+// ============================================================================
+
+model Workspace {
+  id           String        @id @default(cuid())
+  name         String
+  type         WorkspaceType @default(PERSONAL)
+  iconColor    String? // cor/identidade visual
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  members              Member[]
+  invitations          Invitation[]
+  settings             WorkspaceSettings?
+  accounts             Account[]
+  categories           Category[]
+  tags                 Tag[]
+  transactions         Transaction[]
+  budgets              Budget[]
+  recurringTransactions RecurringTransaction[]
+  installmentPlans     InstallmentPlan[]
+  creditCardInvoices   CreditCardInvoice[]
+  investmentAssets     InvestmentAsset[]
+  activities           ActivityLog[]
+  importBatches        ImportBatch[]
+}
+
+enum WorkspaceType {
+  PERSONAL
+  SHARED // familiar / compartilhado
+}
+
+model WorkspaceSettings {
+  id          String @id @default(cuid())
+  workspaceId String @unique
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  baseCurrency      String  @default("BRL") // moeda de consolidação
+  // Dia em que o "mês financeiro" começa (1 = dia do mês civil). Útil p/ quem
+  // organiza por data de salário em vez do calendário.
+  monthStartDay     Int     @default(1)
+  // Quantos meses à frente materializar recorrências/parcelas p/ previsão.
+  forecastHorizon   Int     @default(12)
+  // Meses de histórico usados na média móvel de gastos variáveis (previsão).
+  variableLookback  Int     @default(3)
+  weekStartsOnMonday Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+}
+
+model Member {
+  id          String     @id @default(cuid())
+  workspaceId String
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        MemberRole @default(MEMBER)
+  // apelido exibido dentro do workspace (ex.: "Pai", "Mãe")
+  displayName String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+enum MemberRole {
+  OWNER  // dono — pode excluir o workspace e gerenciar billing
+  ADMIN  // gerencia membros e configurações
+  MEMBER // cria/edita lançamentos
+  VIEWER // somente leitura
+}
+
+model Invitation {
+  id          String           @id @default(cuid())
+  workspaceId String
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  email       String
+  role        MemberRole       @default(MEMBER)
+  token       String           @unique
+  status      InvitationStatus @default(PENDING)
+  invitedById String
+  invitedBy   User             @relation("InvitationInvitedBy", fields: [invitedById], references: [id])
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([workspaceId])
+  @@index([email])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+// ============================================================================
+//  3. INSTITUIÇÕES & CONTAS FINANCEIRAS
+//     "Account" = conta bancária, cartão, carteira, financiamento, investimento.
+// ============================================================================
+
+// Catálogo de bancos/instituições (seedado: Nubank, Itaú, Inter, ...).
+// Permite ícone/cor padronizados. customizadas têm workspaceId preenchido.
+model Institution {
+  id          String  @id @default(cuid())
+  name        String
+  shortName   String?
+  logoUrl     String?
+  brandColor  String?
+  workspaceId String? // null = global (seed); preenchido = institução custom do usuário
+
+  accounts Account[]
+
+  @@index([workspaceId])
+}
+
+model Account {
+  id            String      @id @default(cuid())
+  clientId      String?     @unique
+  workspaceId   String
+  workspace     Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  institutionId String?
+  institution   Institution? @relation(fields: [institutionId], references: [id])
+
+  name        String
+  type        AccountType
+  currency    String      @default("BRL")
+  iconColor   String?
+  // Saldo INICIAL (abertura). O saldo atual é DERIVADO: openingBalance + soma das
+  // transações COMPLETED da conta. Não armazene saldo "vivo" — calcule/caching.
+  openingBalance Decimal  @db.Decimal(18, 2) @default(0)
+  // Inclui no patrimônio/consolidação do dashboard?
+  includeInTotal Boolean  @default(true)
+  archived       Boolean  @default(false)
+  sortOrder      Int      @default(0)
+
+  // --- Específico de CARTÃO DE CRÉDITO (type = CREDIT_CARD) ---
+  creditLimit       Decimal? @db.Decimal(18, 2)
+  statementClosingDay Int?   // dia de fechamento da fatura (1-31)
+  paymentDueDay       Int?   // dia de vencimento da fatura (1-31)
+  // conta de onde a fatura é paga por padrão (corrente)
+  paymentAccountId    String?
+  paymentAccount      Account?  @relation("CardPaymentAccount", fields: [paymentAccountId], references: [id])
+  cardsPaidByThis     Account[] @relation("CardPaymentAccount")
+
+  // --- Específico de FINANCIAMENTO/EMPRÉSTIMO (type = LOAN) ---
+  loanPrincipal       Decimal? @db.Decimal(18, 2) // valor financiado
+  loanInstallments    Int?     // nº total de parcelas
+  loanInterestRate    Decimal? @db.Decimal(9, 6)  // taxa mensal (ex.: 0.0149 = 1,49% a.m.)
+  loanStartDate       DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transactions        Transaction[] @relation("AccountTransactions")
+  counterTransactions Transaction[] @relation("AccountCounterparty")
+  creditCardInvoices  CreditCardInvoice[]
+  investmentTransactions InvestmentTransaction[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, type])
+}
+
+enum AccountType {
+  CHECKING     // conta corrente
+  SAVINGS      // poupança
+  CASH         // dinheiro/carteira
+  CREDIT_CARD  // cartão de crédito
+  DEBIT_CARD   // cartão de débito (geralmente atrelado a CHECKING)
+  MEAL_VOUCHER // VR/VA
+  INVESTMENT   // conta/corretora de investimentos
+  LOAN         // financiamento/empréstimo
+  OTHER
+}
+
+// ============================================================================
+//  4. CATEGORIAS, TAGS & ORÇAMENTO
+//     A NATUREZA (fixo/variável/lazer) é atributo da categoria — assim o app
+//     classifica gastos automaticamente p/ relatórios e previsão.
+// ============================================================================
+
+model Category {
+  id          String         @id @default(cuid())
+  clientId    String?        @unique
+  workspaceId String
+  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name      String
+  kind      CategoryKind // receita ou despesa
+  nature    CategoryNature @default(VARIABLE)
+  icon      String?
+  color     String?
+
+  // hierarquia: categoria -> subcategorias
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+
+  sortOrder Int      @default(0)
+  archived  Boolean  @default(false)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transactions          Transaction[]
+  budgets               Budget[]
+  recurringTransactions RecurringTransaction[]
+  installmentPlans      InstallmentPlan[]
+
+  @@index([workspaceId])
+}
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+}
+
+enum CategoryNature {
+  FIXED      // gasto fixo (aluguel, mensalidade)
+  VARIABLE   // gasto variável (mercado, transporte)
+  LEISURE    // lazer
+  INVESTMENT // aporte
+  INCOME     // entrada
+  OTHER
+}
+
+model Tag {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  color       String?
+
+  transactions Transaction[] @relation("TransactionTags")
+
+  @@unique([workspaceId, name])
+}
+
+// Orçamento por categoria por mês. categoryId null = orçamento global do mês.
+model Budget {
+  id          String    @id @default(cuid())
+  clientId    String?   @unique
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+
+  // mês de referência normalizado p/ o dia 1 (ex.: 2026-06-01)
+  month   DateTime @db.Date
+  amount  Decimal  @db.Decimal(18, 2)
+  rollover Boolean @default(false) // sobra/excesso acumula no mês seguinte?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workspaceId, categoryId, month])
+  @@index([workspaceId, month])
+}
+
+// ============================================================================
+//  5. TRANSAÇÕES (núcleo)
+//     - amount SEMPRE positivo; o sinal vem de `type`.
+//     - TRANSFER usa DUAS pernas ligadas por transferId (saldo correto por conta).
+//     - status PENDING + dueDate = conta a pagar (EXPENSE) ou a receber (INCOME).
+//     - parcela: installmentPlanId + installmentNumber.
+//     - gerada por recorrência: recurringTransactionId preenchido.
+//     - compra no cartão: creditCardInvoiceId aponta p/ a fatura.
+// ============================================================================
+
+model Transaction {
+  id          String            @id @default(cuid())
+  clientId    String?           @unique // idempotência offline
+  workspaceId String
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  accountId String
+  account   Account @relation("AccountTransactions", fields: [accountId], references: [id])
+
+  type     TransactionType
+  status   TransactionStatus @default(COMPLETED)
+  amount   Decimal           @db.Decimal(18, 2) // sempre > 0
+  currency String            @default("BRL")
+
+  description String
+  notes       String?
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  // data de competência/efetivação
+  date    DateTime
+  // vencimento (contas a pagar/receber e lançamentos agendados)
+  dueDate DateTime?
+  // quando foi efetivamente paga/recebida (status COMPLETED)
+  paidAt  DateTime?
+
+  // quem lançou (relevante em workspace compartilhado)
+  createdById String?
+  createdBy   User?   @relation("TransactionCreatedBy", fields: [createdById], references: [id])
+
+  // --- TRANSFERÊNCIA ---
+  transferId       String?  // agrupa as duas pernas
+  counterAccountId String?
+  counterAccount   Account? @relation("AccountCounterparty", fields: [counterAccountId], references: [id])
+
+  // --- PARCELAMENTO ---
+  installmentPlanId String?
+  installmentPlan   InstallmentPlan? @relation(fields: [installmentPlanId], references: [id], onDelete: Cascade)
+  installmentNumber Int? // 1..N
+
+  // --- RECORRÊNCIA (origem) ---
+  recurringTransactionId String?
+  recurringTransaction   RecurringTransaction? @relation(fields: [recurringTransactionId], references: [id], onDelete: SetNull)
+
+  // --- FATURA DE CARTÃO ---
+  creditCardInvoiceId String?
+  creditCardInvoice   CreditCardInvoice? @relation(fields: [creditCardInvoiceId], references: [id], onDelete: SetNull)
+
+  tags        Tag[]        @relation("TransactionTags")
+  attachments Attachment[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([workspaceId, date])
+  @@index([workspaceId, status, dueDate]) // contas a pagar/receber
+  @@index([accountId, date])
+  @@index([categoryId])
+  @@index([transferId])
+  @@index([installmentPlanId])
+  @@index([creditCardInvoiceId])
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+enum TransactionStatus {
+  COMPLETED // efetivada (entra no saldo)
+  PENDING   // prevista/não paga (conta a pagar/receber)
+  CANCELED
+}
+
+model Attachment {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  url           String // objeto em storage (S3/R2); guarde apenas a chave/URL
+  filename      String?
+  mimeType      String?
+  sizeBytes     Int?
+  createdAt     DateTime    @default(now())
+
+  @@index([transactionId])
+}
+
+// ============================================================================
+//  6. PARCELAMENTO & RECORRÊNCIA
+// ============================================================================
+
+// Uma compra parcelada. Gera N Transactions (parcelas), normalmente em CARTÃO.
+// As futuras nascem como PENDING/agendadas -> aparecem na previsão.
+model InstallmentPlan {
+  id          String    @id @default(cuid())
+  clientId    String?   @unique
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  description     String
+  totalAmount     Decimal  @db.Decimal(18, 2)
+  installments    Int      // nº de parcelas
+  firstDueDate    DateTime
+  categoryId      String?
+  category        Category? @relation(fields: [categoryId], references: [id])
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transactions Transaction[]
+
+  @@index([workspaceId])
+}
+
+// Template de lançamento recorrente (assinatura, salário, aluguel...).
+// Um job materializa ocorrências futuras como Transactions (status PENDING)
+// até WorkspaceSettings.forecastHorizon meses à frente.
+model RecurringTransaction {
+  id          String    @id @default(cuid())
+  clientId    String?   @unique
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  accountId   String
+  type        TransactionType
+  amount      Decimal   @db.Decimal(18, 2)
+  description String
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+
+  frequency RecurrenceFrequency
+  interval  Int      @default(1) // a cada N (ex.: interval=2 + WEEKLY = quinzenal)
+  // dia/regra de ancoragem (dia do mês p/ MONTHLY, dia da semana p/ WEEKLY...)
+  anchorDay Int?
+  startDate DateTime
+  endDate   DateTime? // null = sem fim
+  // até quando já foi materializado (controle do job)
+  materializedUntil DateTime?
+  isActive  Boolean  @default(true)
+  autoConfirm Boolean @default(false) // efetiva sozinho na data?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transactions Transaction[]
+
+  @@index([workspaceId, isActive])
+}
+
+enum RecurrenceFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+// ============================================================================
+//  7. FATURA DE CARTÃO DE CRÉDITO
+//     Agrupa as compras do ciclo. O PAGAMENTO da fatura é uma TRANSFER da conta
+//     corrente -> cartão. A fatura aberta entra na previsão como "a pagar".
+// ============================================================================
+
+model CreditCardInvoice {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  accountId   String
+  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // período do ciclo
+  closingDate DateTime
+  dueDate     DateTime
+  status      InvoiceStatus @default(OPEN)
+  paidAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+
+  @@unique([accountId, closingDate])
+  @@index([workspaceId, status])
+}
+
+enum InvoiceStatus {
+  OPEN    // ciclo em aberto, ainda acumulando compras
+  CLOSED  // fechada, aguardando pagamento
+  PAID
+  OVERDUE
+}
+
+// ============================================================================
+//  8. INVESTIMENTOS
+//     Account (type=INVESTMENT) -> ativos (InvestmentAsset) -> movimentos.
+//     A posição (qtd, preço médio) é DERIVADA dos movimentos (pode ser cacheada).
+// ============================================================================
+
+model InvestmentAsset {
+  id          String          @id @default(cuid())
+  workspaceId String
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  symbol      String? // ex.: PETR4, BTC
+  name        String
+  class       InvestmentClass
+  currency    String          @default("BRL")
+  // última cotação conhecida (atualizada por integração ou manualmente)
+  lastPrice      Decimal?  @db.Decimal(18, 8)
+  lastPriceAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions InvestmentTransaction[]
+
+  @@index([workspaceId])
+}
+
+enum InvestmentClass {
+  STOCK         // ação
+  FII           // fundo imobiliário
+  ETF
+  FUND          // fundo
+  FIXED_INCOME  // renda fixa (CDB, Tesouro...)
+  CRYPTO
+  OTHER
+}
+
+model InvestmentTransaction {
+  id        String   @id @default(cuid())
+  clientId  String?  @unique
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  assetId   String
+  asset     InvestmentAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  kind      InvestmentTxKind
+  quantity  Decimal  @db.Decimal(18, 8)
+  unitPrice Decimal  @db.Decimal(18, 8)
+  fees      Decimal  @db.Decimal(18, 2) @default(0)
+  date      DateTime
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([accountId, date])
+  @@index([assetId])
+}
+
+enum InvestmentTxKind {
+  BUY
+  SELL
+  DIVIDEND   // provento
+  INTEREST   // juros/rendimento
+  CONTRIBUTION
+  WITHDRAWAL
+}
+
+// ============================================================================
+//  9. FEED DE ATIVIDADE (auditoria leve p/ workspace compartilhado)
+// ============================================================================
+
+model ActivityLog {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actorId     String?
+  actor       User?     @relation(fields: [actorId], references: [id])
+  action      String // "transaction.created", "account.updated", ...
+  entityType  String
+  entityId    String
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+
+  @@index([workspaceId, createdAt])
+}
+
+// ============================================================================
+//  10. IMPORTAÇÃO POR LLM (extratos, comprovantes, CSV/OFX)
+//      Um documento sobe -> a IA (ou parser) extrai linhas -> usuário revisa e
+//      confirma -> só então viram Transactions reais. Nada entra no saldo sem
+//      confirmação humana. O lote fica persistido p/ auditoria e re-revisão.
+// ============================================================================
+
+model ImportBatch {
+  id          String    @id @default(cuid())
+  clientId    String?   @unique // idempotência offline (futuro)
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  createdById String?
+  source      ImportSource
+  status      ImportStatus @default(PROCESSING)
+
+  filename String?
+  mimeType String?
+  model    String? // modelo/provider usado na extração (ex.: "openai:gpt-4o")
+
+  // saída crua da extração (resposta do LLM / parser) p/ depuração e auditoria
+  rawExtraction Json?
+  error         String? // mensagem caso a extração falhe
+
+  items ImportItem[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, createdAt])
+}
+
+model ImportItem {
+  id      String      @id @default(cuid())
+  batchId String
+  batch   ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  // dados extraídos (editáveis na revisão)
+  date        DateTime
+  description String
+  amount      Decimal         @db.Decimal(18, 2) // sempre > 0; sinal vem do type
+  type        TransactionType // INCOME | EXPENSE (TRANSFER não é importado aqui)
+
+  // sugestão da IA (nome cru) + resolução para entidades do workspace
+  suggestedCategory String?
+  categoryId        String?
+  accountId         String?
+
+  status        ImportItemStatus @default(PENDING)
+  transactionId String? // Transaction criada ao confirmar (link)
+  confidence    Float?
+  raw           Json? // linha original/contexto
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([batchId])
+}
+
+enum ImportSource {
+  PDF
+  IMAGE
+  CSV
+  OFX
+}
+
+enum ImportStatus {
+  PROCESSING     // extração em andamento
+  PENDING_REVIEW // extraído, aguardando revisão do usuário
+  CONFIRMED      // itens aceitos viraram transações
+  CANCELED
+  FAILED
+}
+
+enum ImportItemStatus {
+  PENDING  // aguardando decisão na revisão
+  ACCEPTED // marcado para importar
+  REJECTED // descartado pelo usuário
+  IMPORTED // já virou Transaction
+}

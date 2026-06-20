@@ -1,0 +1,111 @@
+### Nossa Grana — testes da API (REST Client / VS Code)
+### Rode na ordem: register -> guarda tokens -> usa workspaceId
+
+@host = http://localhost:3333/api
+
+### Health
+GET http://localhost:3333/health
+
+### 1) Registrar (cria usuário + workspace pessoal)
+# @name register
+POST {{host}}/auth/register
+Content-Type: application/json
+
+{
+  "email": "maria@exemplo.com",
+  "password": "senha-super-secreta",
+  "name": "Maria"
+}
+
+###
+@access = {{register.response.body.accessToken}}
+@refresh = {{register.response.body.refreshToken}}
+
+### Login (se já registrado)
+# @name login
+POST {{host}}/auth/login
+Content-Type: application/json
+
+{ "email": "maria@exemplo.com", "password": "senha-super-secreta" }
+
+### Usuário atual
+GET {{host}}/auth/me
+Authorization: Bearer {{access}}
+
+### Listar workspaces
+# @name workspaces
+GET {{host}}/workspaces
+Authorization: Bearer {{access}}
+
+###
+@ws = {{workspaces.response.body.workspaces.0.id}}
+
+### Criar conta corrente
+# @name conta
+POST {{host}}/workspaces/{{ws}}/accounts
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{ "name": "Nubank", "type": "CHECKING", "openingBalance": 1000 }
+
+###
+@accId = {{conta.response.body.account.id}}
+
+### Listar categorias (criadas por padrão)
+# @name cats
+GET {{host}}/workspaces/{{ws}}/categories
+Authorization: Bearer {{access}}
+
+### Criar uma despesa
+POST {{host}}/workspaces/{{ws}}/transactions
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{
+  "accountId": "{{accId}}",
+  "type": "EXPENSE",
+  "amount": 120.50,
+  "description": "Mercado",
+  "date": "2026-06-20"
+}
+
+### Conta a pagar (PENDING + dueDate)
+POST {{host}}/workspaces/{{ws}}/transactions
+Authorization: Bearer {{access}}
+Content-Type: application/json
+
+{
+  "accountId": "{{accId}}",
+  "type": "EXPENSE",
+  "status": "PENDING",
+  "amount": 89.90,
+  "description": "Internet",
+  "date": "2026-07-10",
+  "dueDate": "2026-07-10"
+}
+
+### Listar transações
+GET {{host}}/workspaces/{{ws}}/transactions
+Authorization: Bearer {{access}}
+
+### Contas a pagar
+GET {{host}}/workspaces/{{ws}}/transactions/payables?kind=payable
+Authorization: Bearer {{access}}
+
+### Resumo do dashboard
+GET {{host}}/workspaces/{{ws}}/forecast/summary
+Authorization: Bearer {{access}}
+
+### Previsão
+GET {{host}}/workspaces/{{ws}}/forecast
+Authorization: Bearer {{access}}
+
+### Sync pull (delta completo)
+GET {{host}}/workspaces/{{ws}}/sync/pull
+Authorization: Bearer {{access}}
+
+### Refresh token (rotação)
+POST {{host}}/auth/refresh
+Content-Type: application/json
+
+{ "refreshToken": "{{refresh}}" }

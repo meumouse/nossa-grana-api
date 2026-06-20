@@ -1,0 +1,43 @@
+/**
+ * Tipos compartilhados da camada de LLM. São agnósticos de provider — a
+ * implementação concreta (OpenAI hoje) fica em arquivos próprios e o resto do
+ * app só conhece estas interfaces.
+ */
+
+export type ExtractedType = 'INCOME' | 'EXPENSE';
+
+/** Uma transação extraída de um documento, antes da revisão do usuário. */
+export interface ExtractedTransaction {
+  /** Data de competência, ISO (yyyy-mm-dd). */
+  date: string;
+  description: string;
+  /** Sempre positivo; o sinal vem do `type`. */
+  amount: number;
+  type: ExtractedType;
+  /** Nome de categoria sugerido pela IA (cru, ainda não resolvido). */
+  suggestedCategory?: string | null;
+  /** 0..1 — confiança da IA na linha. */
+  confidence?: number | null;
+}
+
+export interface ExtractionResult {
+  items: ExtractedTransaction[];
+  detectedCurrency?: string | null;
+  notes?: string | null;
+}
+
+/** Documento binário (PDF/imagem) a ser lido pela IA. */
+export interface ExtractDocumentInput {
+  data: Buffer;
+  mimeType: string;
+  filename?: string;
+  source: 'PDF' | 'IMAGE';
+  /** Categorias existentes do workspace, p/ guiar a sugestão. */
+  categoryNames?: string[];
+}
+
+/** Linhas já parseadas (CSV/OFX) que só precisam de categorização. */
+export interface CategorizeInput {
+  rows: { description: string; type: ExtractedType }[];
+  categoryNames: string[];
+}

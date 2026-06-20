@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: nossa-grana-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nossagrana
+      POSTGRES_PASSWORD: nossagrana
+      POSTGRES_DB: nossagrana
+    # Host na 5433 p/ não conflitar com um PostgreSQL local na 5432.
+    ports:
+      - "5433:5432"
+    volumes:
+      - nossa_grana_pgdata:/var/lib/postgresql/data
+    networks:
+      - nossa-grana-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nossagrana"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nossa-grana-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3333
+      DATABASE_URL: "postgresql://nossagrana:nossagrana@db:5432/nossagrana?schema=public"
+      CORS_ORIGIN: "http://localhost:8081"
+      # Segredos de DEV — troque em produção (openssl rand -hex 48).
+      JWT_ACCESS_SECRET: "dev-access-secret-change-me-please-0123456789abcdef"
+      JWT_REFRESH_SECRET: "dev-refresh-secret-change-me-please-0123456789abcdef"
+      ACCESS_TOKEN_TTL: "15m"
+      REFRESH_TOKEN_TTL_DAYS: "30"
+      INVITATION_TTL_DAYS: "7"
+    ports:
+      - "3333:3333"
+    networks:
+      # alias `api` na rede compartilhada → o nginx do repo do app
+      # (nossa-grana-app) resolve `http://api:3333` ao fazer proxy /api.
+      nossa-grana-net:
+        aliases:
+          - api
+
+volumes:
+  nossa_grana_pgdata:
+
+# Rede compartilhada entre os dois repos (API + App). Crie uma vez com:
+#   docker network create nossa-grana-net
+networks:
+  nossa-grana-net:
+    external: true
+    name: nossa-grana-net
