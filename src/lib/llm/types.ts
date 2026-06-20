@@ -6,6 +6,21 @@
 
 export type ExtractedType = 'INCOME' | 'EXPENSE';
 
+/** Providers de LLM suportados. */
+export type LlmProvider = 'openai';
+
+/**
+ * Configuração resolvida do provider de LLM para uma requisição. Vem das
+ * settings do workspace quando definidas, com fallback nos defaults de env.
+ */
+export interface LlmConfig {
+  provider: LlmProvider;
+  model: string;
+  /** Chave de API já decifrada; null = não configurada. */
+  apiKey: string | null;
+  maxOutputTokens: number;
+}
+
 /** Uma transação extraída de um documento, antes da revisão do usuário. */
 export interface ExtractedTransaction {
   /** Data de competência, ISO (yyyy-mm-dd). */

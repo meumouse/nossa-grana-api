@@ -2,7 +2,7 @@ import type { ImportSource, Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { BadRequest, NotFound } from '../../lib/errors';
 import { randomUUID } from '../../lib/tokens';
-import { getExtractor, type ExtractedTransaction } from '../../lib/llm';
+import { getExtractor, resolveLlmConfig, type ExtractedTransaction } from '../../lib/llm';
 import { createTransaction } from '../transactions/transactions.service';
 import { parseCsv, parseOfx, type ParsedRow } from './parsers';
 import type { confirmSchema, patchItemSchema } from './imports.schemas';
@@ -95,7 +95,11 @@ interface CreateBatchInput {
 export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatchInput) {
   if (input.defaultAccountId) await assertAccount(db, ctx.workspaceId, input.defaultAccountId);
 
-  const extractor = getExtractor();
+  const settings = await db.workspaceSettings.findUnique({
+    where: { workspaceId: ctx.workspaceId },
+    select: { llmProvider: true, llmModel: true, llmApiKey: true },
+  });
+  const extractor = getExtractor(resolveLlmConfig(settings));
   const batch = await db.importBatch.create({
     data: {
       workspaceId: ctx.workspaceId,

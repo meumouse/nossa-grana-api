@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
+import type { WorkspaceSettings } from '@prisma/client';
 import { z } from 'zod';
 import { NotFound } from '../../lib/errors';
+import { encryptSecret } from '../../lib/secrets';
 import { requireRole } from '../../plugins/workspace';
 
 const updateSchema = z.object({
@@ -14,7 +16,18 @@ const settingsSchema = z.object({
   forecastHorizon: z.number().int().min(1).max(36).optional(),
   variableLookback: z.number().int().min(1).max(12).optional(),
   weekStartsOnMonday: z.boolean().optional(),
+  // Importação por IA. String vazia limpa o campo (volta ao default de env).
+  llmProvider: z.enum(['openai']).optional(),
+  llmModel: z.string().max(80).optional(),
+  llmApiKey: z.string().max(300).optional(),
 });
+
+/** Remove a chave crua da resposta; expõe só se está configurada. */
+function publicSettings(settings: WorkspaceSettings | null) {
+  if (!settings) return null;
+  const { llmApiKey, ...rest } = settings;
+  return { ...rest, llmApiKeySet: Boolean(llmApiKey) };
+}
 
 /**
  * Rotas escopadas ao workspace ativo: detalhe, atualização, exclusão e settings.
@@ -51,16 +64,26 @@ export default async function workspaceScopedRoutes(app: FastifyInstance): Promi
     const settings = await app.prisma.workspaceSettings.findUnique({
       where: { workspaceId: request.workspace!.id },
     });
-    return { settings };
+    return { settings: publicSettings(settings) };
   });
 
   app.patch('/settings', { preHandler: [requireRole('ADMIN')] }, async (request) => {
-    const body = settingsSchema.parse(request.body);
+    const { llmApiKey, llmProvider, llmModel, ...rest } = settingsSchema.parse(request.body);
+
+    const data: Record<string, unknown> = { ...rest };
+    // Provider/modelo: string vazia → null (volta ao default de env).
+    if (llmProvider !== undefined) data.llmProvider = llmProvider || null;
+    if (llmModel !== undefined) data.llmModel = llmModel.trim() || null;
+    // Chave: vazia limpa; preenchida cifra antes de gravar. Ausente = não mexe.
+    if (llmApiKey !== undefined) {
+      data.llmApiKey = llmApiKey.trim() ? encryptSecret(llmApiKey.trim()) : null;
+    }
+
     const settings = await app.prisma.workspaceSettings.upsert({
       where: { workspaceId: request.workspace!.id },
-      update: body,
-      create: { workspaceId: request.workspace!.id, ...body },
+      update: data,
+      create: { workspaceId: request.workspace!.id, ...data },
     });
-    return { settings };
+    return { settings: publicSettings(settings) };
   });
 }

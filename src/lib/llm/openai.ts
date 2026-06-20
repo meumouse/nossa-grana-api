@@ -1,25 +1,20 @@
 import OpenAI from 'openai';
 import type { ChatCompletionContentPart } from 'openai/resources/chat/completions';
-import { env } from '../../env';
 import { BadRequest } from '../errors';
 import type { DocumentExtractor } from './provider';
-import type { CategorizeInput, ExtractDocumentInput, ExtractedType, ExtractionResult } from './types';
+import type {
+  CategorizeInput,
+  ExtractDocumentInput,
+  ExtractedType,
+  ExtractionResult,
+  LlmConfig,
+} from './types';
 import {
   buildCategorizePrompt,
   buildExtractionPrompt,
   categorizeJsonSchema,
   extractionJsonSchema,
 } from './schema';
-
-let client: OpenAI | null = null;
-
-function getClient(): OpenAI {
-  if (!env.OPENAI_API_KEY) {
-    throw BadRequest('OPENAI_API_KEY não configurada — defina-a para usar a importação por IA.');
-  }
-  client ??= new OpenAI({ apiKey: env.OPENAI_API_KEY });
-  return client;
-}
 
 function dataUrl(mimeType: string, data: Buffer): string {
   return `data:${mimeType};base64,${data.toString('base64')}`;
@@ -56,7 +51,22 @@ function coerceItems(parsed: unknown): ExtractionResult {
 }
 
 export class OpenAIExtractor implements DocumentExtractor {
-  readonly modelLabel = `openai:${env.LLM_MODEL}`;
+  readonly modelLabel: string;
+  private readonly client: OpenAI;
+  private readonly model: string;
+  private readonly maxOutputTokens: number;
+
+  constructor(config: LlmConfig) {
+    if (!config.apiKey) {
+      throw BadRequest(
+        'Chave da OpenAI não configurada — defina-a em Configurações para usar a importação por IA.',
+      );
+    }
+    this.client = new OpenAI({ apiKey: config.apiKey });
+    this.model = config.model;
+    this.maxOutputTokens = config.maxOutputTokens;
+    this.modelLabel = `openai:${config.model}`;
+  }
 
   async extractFromDocument(input: ExtractDocumentInput): Promise<ExtractionResult> {
     const filePart: ChatCompletionContentPart =
@@ -70,9 +80,9 @@ export class OpenAIExtractor implements DocumentExtractor {
             },
           };
 
-    const completion = await getClient().chat.completions.create({
-      model: env.LLM_MODEL,
-      max_completion_tokens: env.LLM_MAX_OUTPUT_TOKENS,
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      max_completion_tokens: this.maxOutputTokens,
       messages: [
         { role: 'system', content: buildExtractionPrompt(input.categoryNames) },
         {
@@ -101,9 +111,9 @@ export class OpenAIExtractor implements DocumentExtractor {
   async categorizeRows(input: CategorizeInput): Promise<(string | null)[]> {
     if (input.rows.length === 0) return [];
 
-    const completion = await getClient().chat.completions.create({
-      model: env.LLM_MODEL,
-      max_completion_tokens: env.LLM_MAX_OUTPUT_TOKENS,
+    const completion = await this.client.chat.completions.create({
+      model: this.model,
+      max_completion_tokens: this.maxOutputTokens,
       messages: [
         { role: 'system', content: buildCategorizePrompt(input.categoryNames) },
         {

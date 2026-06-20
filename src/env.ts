@@ -14,6 +14,9 @@ const schema = z.object({
 
   JWT_ACCESS_SECRET: z.string().min(24),
   JWT_REFRESH_SECRET: z.string().min(24),
+  // Chave p/ cifrar segredos guardados no banco (ex.: chave de LLM por
+  // workspace). Se ausente, deriva-se do segredo de refresh (ver lib/secrets).
+  SETTINGS_ENCRYPTION_KEY: z.string().min(16).optional(),
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
