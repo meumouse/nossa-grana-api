@@ -800,6 +800,7 @@ enum ImportSource {
 enum ImportStatus {
   PROCESSING     // extração em andamento
   PENDING_REVIEW // extraído, aguardando revisão do usuário
+  IMPORTING      // confirmado; criando as transações em background (fila)
   CONFIRMED      // itens aceitos viraram transações
   CANCELED
   FAILED

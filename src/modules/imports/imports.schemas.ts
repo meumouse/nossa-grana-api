@@ -18,6 +18,8 @@ export const confirmSchema = z.object({
 });
 
 export const listQuerySchema = z.object({
-  status: z.enum(['PROCESSING', 'PENDING_REVIEW', 'CONFIRMED', 'CANCELED', 'FAILED']).optional(),
+  status: z
+    .enum(['PROCESSING', 'PENDING_REVIEW', 'IMPORTING', 'CONFIRMED', 'CANCELED', 'FAILED'])
+    .optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });

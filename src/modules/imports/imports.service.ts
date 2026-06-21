@@ -1,6 +1,8 @@
 import type { ImportSource, Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
+import { queueEnabled } from '../../env';
 import { BadRequest, NotFound } from '../../lib/errors';
+import { enqueueConfirmImport } from '../../lib/queue';
 import { randomUUID } from '../../lib/tokens';
 import { getExtractor, resolveLlmConfig, type ExtractedTransaction } from '../../lib/llm';
 import { buildKey, getDownloadUrl, isStorageEnabled, putObject } from '../../lib/storage';
@@ -235,9 +237,14 @@ export async function patchItem(
 }
 
 /**
- * Confirma o lote: cada item ACCEPTED vira uma Transaction (reusa
- * createTransaction — regras de cartão/fatura, tags e log num só lugar).
- * Itens já IMPORTED são ignorados, então reexecutar não duplica.
+ * Confirma o lote.
+ *
+ * Valida de forma síncrona (lote existe, há itens marcados, conta padrão ok) e
+ * marca o lote como IMPORTING. A criação das transações em si é pesada para
+ * listas grandes — fica fora do request:
+ *  - com fila (Redis): enfileira o job e retorna `{ queued: true }` na hora; o
+ *    worker chama `processConfirmBatch`. O front acompanha por polling.
+ *  - sem fila (legado): processa inline e retorna `{ imported }`.
  */
 export async function confirmBatch(
   db: PrismaClient,
@@ -249,45 +256,92 @@ export async function confirmBatch(
     where: { id: batchId, workspaceId: ctx.workspaceId, deletedAt: null },
   });
   if (!batch) throw NotFound('Importação não encontrada');
-  if (batch.status === 'CANCELED' || batch.status === 'FAILED') {
+  if (batch.status === 'CANCELED') {
     throw BadRequest('Esta importação não pode ser confirmada.');
+  }
+  // IMPORTING = job em andamento; evita enfileirar/processar em duplicidade.
+  // FAILED é reprocessável: o usuário corrige (ex.: conta faltando) e reconfirma.
+  if (batch.status === 'IMPORTING') {
+    throw BadRequest('Esta importação já está sendo processada.');
   }
   if (input.defaultAccountId) await assertAccount(db, ctx.workspaceId, input.defaultAccountId);
 
-  const items = await db.importItem.findMany({
-    where: { batchId, status: 'ACCEPTED' },
-  });
-  if (items.length === 0) throw BadRequest('Nenhum item marcado para importar.');
+  const pending = await db.importItem.count({ where: { batchId, status: 'ACCEPTED' } });
+  if (pending === 0) throw BadRequest('Nenhum item marcado para importar.');
 
-  let imported = 0;
-  for (const item of items) {
-    const accountId = item.accountId ?? input.defaultAccountId;
-    if (!accountId) {
-      throw BadRequest(`Defina a conta do lançamento "${item.description}" antes de confirmar.`);
-    }
+  await db.importBatch.update({ where: { id: batchId }, data: { status: 'IMPORTING', error: null } });
 
-    const tx = await createTransaction(db, ctx, {
-      clientId: randomUUID(),
-      accountId,
-      type: item.type as 'INCOME' | 'EXPENSE',
-      status: 'COMPLETED',
-      amount: Number(item.amount),
-      currency: 'BRL',
-      description: item.description,
-      categoryId: item.categoryId ?? null,
-      date: item.date,
+  if (queueEnabled) {
+    await enqueueConfirmImport({
+      batchId,
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      defaultAccountId: input.defaultAccountId,
     });
-
-    await db.importItem.update({
-      where: { id: item.id },
-      data: { status: 'IMPORTED', transactionId: tx.id },
-    });
-    imported += 1;
+    const result = await getBatch(db, ctx.workspaceId, batchId);
+    return { batch: result, queued: true as const };
   }
 
-  await db.importBatch.update({ where: { id: batchId }, data: { status: 'CONFIRMED' } });
+  // Fallback sem fila: processa inline (modo legado).
+  const imported = await processConfirmBatch(db, ctx, batchId, input);
   const result = await getBatch(db, ctx.workspaceId, batchId);
-  return { batch: result, imported };
+  return { batch: result, imported, queued: false as const };
+}
+
+/**
+ * Processa de fato a confirmação: cada item ACCEPTED vira uma Transaction
+ * (reusa createTransaction — regras de cartão/fatura, tags e log num só lugar).
+ * Itens já IMPORTED são ignorados, então reexecutar não duplica.
+ *
+ * Move o lote para CONFIRMED ao terminar; em erro, marca FAILED com a mensagem
+ * (o front mostra ao usuário) e relança. Executado pelo worker da fila ou,
+ * sem fila, inline por `confirmBatch`.
+ */
+export async function processConfirmBatch(
+  db: PrismaClient,
+  ctx: Ctx,
+  batchId: string,
+  input: ConfirmInput,
+): Promise<number> {
+  try {
+    const items = await db.importItem.findMany({ where: { batchId, status: 'ACCEPTED' } });
+
+    let imported = 0;
+    for (const item of items) {
+      const accountId = item.accountId ?? input.defaultAccountId;
+      if (!accountId) {
+        throw BadRequest(`Defina a conta do lançamento "${item.description}" antes de confirmar.`);
+      }
+
+      const tx = await createTransaction(db, ctx, {
+        clientId: randomUUID(),
+        accountId,
+        type: item.type as 'INCOME' | 'EXPENSE',
+        status: 'COMPLETED',
+        amount: Number(item.amount),
+        currency: 'BRL',
+        description: item.description,
+        categoryId: item.categoryId ?? null,
+        date: item.date,
+      });
+
+      await db.importItem.update({
+        where: { id: item.id },
+        data: { status: 'IMPORTED', transactionId: tx.id },
+      });
+      imported += 1;
+    }
+
+    await db.importBatch.update({ where: { id: batchId }, data: { status: 'CONFIRMED' } });
+    return imported;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Falha ao confirmar a importação';
+    await db.importBatch.update({
+      where: { id: batchId },
+      data: { status: 'FAILED', error: message.slice(0, 500) },
+    });
+    throw err;
+  }
 }
 
 /**

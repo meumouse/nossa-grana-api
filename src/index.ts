@@ -1,7 +1,9 @@
 import './load-env';
 import { buildServer } from './server';
-import { env } from './env';
+import { env, queueEnabled } from './env';
 import { startScheduler } from './jobs/scheduler';
+import { startImportWorker } from './jobs/import-worker';
+import { closeImportQueue } from './lib/queue';
 
 async function main(): Promise<void> {
   const app = await buildServer();
@@ -9,9 +11,15 @@ async function main(): Promise<void> {
   // Jobs in-process (materializar recorrências + fechar faturas).
   const stopScheduler = startScheduler(app);
 
+  // Worker da fila de importação (in-process; suficiente p/ 1 instância). Em
+  // múltiplas instâncias, prefira rodar `npm run worker` à parte.
+  const stopWorker = queueEnabled ? startImportWorker(app.prisma, app.log) : null;
+
   const shutdown = async (signal: string) => {
     app.log.info(`Recebido ${signal}, encerrando...`);
     stopScheduler();
+    if (stopWorker) await stopWorker();
+    await closeImportQueue();
     await app.close();
     process.exit(0);
   };

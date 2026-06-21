@@ -74,15 +74,17 @@ export default async function importsRoutes(app: FastifyInstance): Promise<void>
     return { item };
   });
 
-  app.post('/:id/confirm', { preHandler: [requireRole('MEMBER')] }, async (request) => {
+  app.post('/:id/confirm', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = confirmSchema.parse(request.body ?? {});
-    return confirmBatch(
+    const result = await confirmBatch(
       app.prisma,
       { workspaceId: request.workspace!.id, userId: request.userId! },
       id,
       body,
     );
+    // Enfileirado: trabalho segue em background, o front acompanha por polling.
+    return reply.code(result.queued ? 202 : 200).send(result);
   });
 
   app.delete('/:id', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
