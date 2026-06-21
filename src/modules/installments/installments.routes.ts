@@ -6,6 +6,15 @@ import { requireRole } from '../../plugins/workspace';
 import { addMonths } from '../../lib/dates';
 import { Decimal } from '../../lib/money';
 import { txShareSchema } from '../sync/sync.schemas';
+import { ensureInvoicesForDates, pruneEmptyOpenInvoices } from '../invoices/invoices.service';
+
+/** Dados de ciclo do cartão dono do parcelamento (null se for conta). */
+type OwnerCard = {
+  id: string;
+  workspaceId: string;
+  statementClosingDay: number | null;
+  paymentDueDay: number | null;
+};
 
 const createSchema = z
   .object({
@@ -53,6 +62,15 @@ function normalizeShares(raw: z.infer<typeof createSchema>['shares']): ShareRow[
   return owner ? [{ name: owner.name, paid: true, owner: true }, ...rest] : rest;
 }
 
+/** Vencimentos das parcelas pendentes (>= inicial) — as que entram em fatura. */
+function pendingDueDates(planFirstDue: Date, count: number, startInstallment: number): Date[] {
+  const dues: Date[] = [];
+  for (let i = 0; i < count; i += 1) {
+    if (i + 1 >= startInstallment) dues.push(addMonths(planFirstDue, i));
+  }
+  return dues;
+}
+
 /** Divide o total em N parcelas (centavos do resto vão na última). */
 function splitAmount(total: Decimal, n: number): Decimal[] {
   const base = total.div(n).toDecimalPlaces(2, Decimal.ROUND_DOWN);
@@ -61,25 +79,29 @@ function splitAmount(total: Decimal, n: number): Decimal[] {
   return [...parts, last];
 }
 
-/** Garante que a conta/cartão informado pertence ao workspace. */
+/**
+ * Garante que a conta/cartão informado pertence ao workspace. Devolve os dados
+ * de ciclo do cartão (p/ vincular parcelas a faturas) ou null quando for conta.
+ */
 async function assertOwner(
   app: FastifyInstance,
   workspaceId: string,
   body: z.infer<typeof createSchema>,
-): Promise<void> {
+): Promise<OwnerCard | null> {
   if (body.creditCardId) {
     const card = await app.prisma.creditCard.findFirst({
       where: { id: body.creditCardId, workspaceId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, workspaceId: true, statementClosingDay: true, paymentDueDay: true },
     });
     if (!card) throw BadRequest('Cartão inválido para este workspace');
-  } else {
-    const account = await app.prisma.account.findFirst({
-      where: { id: body.accountId, workspaceId, deletedAt: null },
-      select: { id: true },
-    });
-    if (!account) throw BadRequest('Conta inválida para este workspace');
+    return card;
   }
+  const account = await app.prisma.account.findFirst({
+    where: { id: body.accountId, workspaceId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!account) throw BadRequest('Conta inválida para este workspace');
+  return null;
 }
 
 /**
@@ -97,8 +119,10 @@ function buildParcelaRows(opts: {
   shared: boolean;
   shareCount: number | null;
   shares: ShareRow[] | null;
+  // Fatura (futura) de cada parcela, por data de vencimento. Só para cartão.
+  invoiceByDue: Map<number, string> | null;
 }) {
-  const { workspaceId, userId, planId, body, amounts, planFirstDue, shared, shareCount, shares } =
+  const { workspaceId, userId, planId, body, amounts, planFirstDue, shared, shareCount, shares, invoiceByDue } =
     opts;
   return amounts.map((amount, i) => {
     const number = i + 1;
@@ -118,6 +142,9 @@ function buildParcelaRows(opts: {
       dueDate: due,
       installmentPlanId: planId,
       installmentNumber: number,
+      // Parcelas já pagas (anteriores à inicial) são histórico e não entram em
+      // fatura; as pendentes caem na fatura futura do seu ciclo.
+      creditCardInvoiceId: isPaid ? null : invoiceByDue?.get(due.getTime()) ?? null,
       createdById: userId,
       shared,
       shareCount,
@@ -152,7 +179,7 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
   app.post('/', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
     const body = createSchema.parse(request.body);
 
-    await assertOwner(app, request.workspace!.id, body);
+    const card = await assertOwner(app, request.workspace!.id, body);
 
     const amounts = splitAmount(new Decimal(body.totalAmount), body.installments);
 
@@ -182,6 +209,15 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
         },
       });
 
+      // Cartão: materializa as faturas (futuras) dos ciclos e vincula cada parcela.
+      const invoiceByDue = card
+        ? await ensureInvoicesForDates(
+            tx,
+            card,
+            pendingDueDates(planFirstDue, body.installments, body.startInstallment),
+          )
+        : null;
+
       await tx.transaction.createMany({
         data: buildParcelaRows({
           workspaceId: request.workspace!.id,
@@ -193,6 +229,7 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
           shared,
           shareCount,
           shares,
+          invoiceByDue,
         }),
       });
 
@@ -215,7 +252,14 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
     });
     if (!existing) throw NotFound('Parcelamento não encontrado');
 
-    await assertOwner(app, request.workspace!.id, body);
+    const card = await assertOwner(app, request.workspace!.id, body);
+
+    // Cartão antigo das parcelas atuais (pode mudar nesta edição) — usado p/
+    // limpar faturas que ficarem vazias após a regeneração.
+    const prevTx = await app.prisma.transaction.findFirst({
+      where: { installmentPlanId: id, creditCardId: { not: null }, deletedAt: null },
+      select: { creditCardId: true },
+    });
 
     const amounts = splitAmount(new Decimal(body.totalAmount), body.installments);
     const shares = normalizeShares(body.shares);
@@ -244,6 +288,14 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
         data: { deletedAt: new Date() },
       });
 
+      const invoiceByDue = card
+        ? await ensureInvoicesForDates(
+            tx,
+            card,
+            pendingDueDates(planFirstDue, body.installments, body.startInstallment),
+          )
+        : null;
+
       await tx.transaction.createMany({
         data: buildParcelaRows({
           workspaceId: request.workspace!.id,
@@ -255,8 +307,16 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
           shared,
           shareCount,
           shares,
+          invoiceByDue,
         }),
       });
+
+      // Faturas que ficaram sem lançamento (cartão removido/trocado/menos parcelas).
+      const wsId = request.workspace!.id;
+      const cardIds = new Set<string>();
+      if (prevTx?.creditCardId) cardIds.add(prevTx.creditCardId);
+      if (card?.id) cardIds.add(card.id);
+      for (const cardId of cardIds) await pruneEmptyOpenInvoices(tx, wsId, cardId);
 
       return updated;
     });
@@ -271,13 +331,24 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
     });
     if (!existing) throw NotFound('Parcelamento não encontrado');
 
-    await app.prisma.$transaction([
-      app.prisma.installmentPlan.update({ where: { id }, data: { deletedAt: new Date() } }),
-      app.prisma.transaction.updateMany({
+    const wsId = request.workspace!.id;
+    // Cartões cujas faturas podem esvaziar ao remover as parcelas pendentes.
+    const cardTx = await app.prisma.transaction.findMany({
+      where: { installmentPlanId: id, status: 'PENDING', creditCardId: { not: null }, deletedAt: null },
+      select: { creditCardId: true },
+      distinct: ['creditCardId'],
+    });
+
+    await app.prisma.$transaction(async (tx) => {
+      await tx.installmentPlan.update({ where: { id }, data: { deletedAt: new Date() } });
+      await tx.transaction.updateMany({
         where: { installmentPlanId: id, status: 'PENDING', deletedAt: null },
         data: { deletedAt: new Date() },
-      }),
-    ]);
+      });
+      for (const t of cardTx) {
+        if (t.creditCardId) await pruneEmptyOpenInvoices(tx, wsId, t.creditCardId);
+      }
+    });
     return reply.code(204).send();
   });
 }

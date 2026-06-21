@@ -1,6 +1,6 @@
 import type { CategoryNature, PrismaClient } from '@prisma/client';
 import { Decimal } from '../../lib/money';
-import { addMonths, financialMonthStart, startOfDayUTC } from '../../lib/dates';
+import { addMonths, financialMonthStart, lastDayOfMonth, startOfDayUTC } from '../../lib/dates';
 import { workspaceBalances } from '../../lib/balance';
 
 const VARIABLE_NATURES: CategoryNature[] = ['VARIABLE', 'LEISURE'];
@@ -108,4 +108,60 @@ export async function computeForecast(db: PrismaClient, workspaceId: string) {
     months,
     firstNegativeMonth: months.find((m) => m.negative)?.month ?? null,
   };
+}
+
+export interface AccountInstallmentForecast {
+  accountId: string;
+  accountName: string;
+  month: Date; // 1º dia (civil) do mês
+  dueDate: Date; // último dia do mês — vencimento adotado p/ parcelas de conta
+  total: Decimal;
+  count: number;
+}
+
+/**
+ * Previsão de "faturas" para parcelas vinculadas a CONTA/banco. Conta não tem o
+ * conceito de fatura (isso é do cartão), então agrupamos as parcelas pendentes
+ * por conta + mês civil, com vencimento no último dia do mês. As parcelas de
+ * cartão já viram CreditCardInvoice (futuras) e saem por GET /invoices.
+ */
+export async function computeAccountInstallmentForecast(
+  db: PrismaClient,
+  workspaceId: string,
+): Promise<AccountInstallmentForecast[]> {
+  const parcelas = await db.transaction.findMany({
+    where: {
+      workspaceId,
+      status: 'PENDING',
+      deletedAt: null,
+      installmentPlanId: { not: null },
+      accountId: { not: null },
+    },
+    select: { accountId: true, amount: true, date: true, account: { select: { name: true } } },
+    orderBy: { date: 'asc' },
+  });
+
+  const groups = new Map<string, AccountInstallmentForecast>();
+  for (const p of parcelas) {
+    if (!p.accountId) continue;
+    const year = p.date.getUTCFullYear();
+    const month = p.date.getUTCMonth();
+    const key = `${p.accountId}:${year}-${month}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        accountId: p.accountId,
+        accountName: p.account?.name ?? 'Conta',
+        month: new Date(Date.UTC(year, month, 1)),
+        dueDate: new Date(Date.UTC(year, month, lastDayOfMonth(year, month))),
+        total: new Decimal(0),
+        count: 0,
+      };
+      groups.set(key, group);
+    }
+    group.total = group.total.plus(p.amount);
+    group.count += 1;
+  }
+
+  return [...groups.values()].sort((a, b) => a.month.getTime() - b.month.getTime());
 }

@@ -2,11 +2,18 @@ import type { FastifyInstance } from 'fastify';
 import { Decimal } from '../../lib/money';
 import { addMonths, financialMonthStart, startOfDayUTC } from '../../lib/dates';
 import { workspaceBalances } from '../../lib/balance';
-import { computeForecast } from './forecast.service';
+import { computeAccountInstallmentForecast, computeForecast } from './forecast.service';
 
 export default async function forecastRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', async (request) => {
     return computeForecast(app.prisma, request.workspace!.id);
+  });
+
+  // Previsão de parcelas de CONTA/banco agrupadas por mês (último dia = vencimento).
+  // As parcelas de cartão já saem como faturas futuras em GET /invoices.
+  app.get('/invoices', async (request) => {
+    const accounts = await computeAccountInstallmentForecast(app.prisma, request.workspace!.id);
+    return { accounts };
   });
 
   // Resumo p/ o dashboard: saldo consolidado + fluxo do mês + pendências.
