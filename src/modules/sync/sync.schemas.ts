@@ -9,7 +9,7 @@ import { z } from 'zod';
 const accountData = z.object({
   name: z.string().min(1),
   type: z.enum([
-    'CHECKING', 'SAVINGS', 'CASH', 'CREDIT_CARD', 'DEBIT_CARD',
+    'CHECKING', 'SAVINGS', 'CASH', 'DEBIT_CARD',
     'MEAL_VOUCHER', 'INVESTMENT', 'LOAN', 'OTHER',
   ]),
   currency: z.string().length(3).default('BRL'),
@@ -19,6 +19,22 @@ const accountData = z.object({
   archived: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
   institutionId: z.string().nullable().optional(),
+});
+
+// Cartão de crédito é entidade própria (não tem saldo): sincroniza limite + ciclo.
+const creditCardData = z.object({
+  name: z.string().min(1),
+  currency: z.string().length(3).default('BRL'),
+  iconColor: z.string().nullable().optional(),
+  archived: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+  institutionId: z.string().nullable().optional(),
+  creditLimit: z.coerce.number().nullable().optional(),
+  statementClosingDay: z.number().int().min(1).max(31).nullable().optional(),
+  paymentDueDay: z.number().int().min(1).max(31).nullable().optional(),
+  lateInterestRate: z.coerce.number().min(0).nullable().optional(),
+  // referência a uma conta (pode ser um clientId criado no mesmo push)
+  paymentAccountId: z.string().nullable().optional(),
 });
 
 const categoryData = z.object({
@@ -39,7 +55,9 @@ export const txShareSchema = z.object({
 });
 
 const transactionData = z.object({
-  accountId: z.string().min(1),
+  // Dono: conta OU cartão (resolvidos via idMap). Exatamente um vem preenchido.
+  accountId: z.string().min(1).nullable().optional(),
+  creditCardId: z.string().min(1).nullable().optional(),
   type: z.enum(['INCOME', 'EXPENSE', 'TRANSFER']),
   status: z.enum(['COMPLETED', 'PENDING', 'CANCELED']).default('COMPLETED'),
   amount: z.coerce.number(),
@@ -66,6 +84,7 @@ const change = <T extends z.ZodTypeAny>(data: T) =>
 
 export const pushSchema = z.object({
   accounts: z.array(change(accountData)).default([]),
+  creditCards: z.array(change(creditCardData)).default([]),
   categories: z.array(change(categoryData)).default([]),
   transactions: z.array(change(transactionData)).default([]),
 });
@@ -75,5 +94,6 @@ export const pullSchema = z.object({
 });
 
 export type AccountChange = z.infer<ReturnType<typeof change<typeof accountData>>>;
+export type CreditCardChange = z.infer<ReturnType<typeof change<typeof creditCardData>>>;
 export type CategoryChange = z.infer<ReturnType<typeof change<typeof categoryData>>>;
 export type TransactionChange = z.infer<ReturnType<typeof change<typeof transactionData>>>;

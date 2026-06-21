@@ -2,16 +2,17 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { NotFound } from '../../lib/errors';
 import { requireRole } from '../../plugins/workspace';
-import { accountBalance, creditCardAvailable, workspaceBalances } from '../../lib/balance';
+import { accountBalance, workspaceBalances } from '../../lib/balance';
 import { logActivity } from '../../lib/activity';
 
+// Cartão de crédito NÃO é uma conta — virou entidade própria (módulo cards).
+// CREDIT_CARD saiu do AccountType e os campos de cartão saíram daqui.
 const baseSchema = z.object({
   name: z.string().min(1).max(120),
   type: z.enum([
     'CHECKING',
     'SAVINGS',
     'CASH',
-    'CREDIT_CARD',
     'DEBIT_CARD',
     'MEAL_VOUCHER',
     'INVESTMENT',
@@ -25,12 +26,6 @@ const baseSchema = z.object({
   includeInTotal: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
   clientId: z.string().uuid().optional(),
-  // Cartão de crédito
-  creditLimit: z.coerce.number().optional(),
-  statementClosingDay: z.number().int().min(1).max(31).optional(),
-  paymentDueDay: z.number().int().min(1).max(31).optional(),
-  lateInterestRate: z.coerce.number().min(0).optional(),
-  paymentAccountId: z.string().optional(),
   // Conta bancária (dados + LIS / cheque especial)
   agency: z.string().max(20).nullable().optional(),
   accountNumber: z.string().max(30).nullable().optional(),
@@ -61,14 +56,10 @@ export default async function accountsRoutes(app: FastifyInstance): Promise<void
 
     const balances = await workspaceBalances(app.prisma, request.workspace!.id);
 
-    const withBalances = await Promise.all(
-      accounts.map(async (a) => ({
-        ...a,
-        balance: balances.get(a.id) ?? a.openingBalance,
-        creditAvailable:
-          a.type === 'CREDIT_CARD' ? await creditCardAvailable(app.prisma, a) : null,
-      })),
-    );
+    const withBalances = accounts.map((a) => ({
+      ...a,
+      balance: balances.get(a.id) ?? a.openingBalance,
+    }));
 
     return { accounts: withBalances };
   });
@@ -85,8 +76,6 @@ export default async function accountsRoutes(app: FastifyInstance): Promise<void
       account: {
         ...account,
         balance: await accountBalance(app.prisma, account.id),
-        creditAvailable:
-          account.type === 'CREDIT_CARD' ? await creditCardAvailable(app.prisma, account) : null,
       },
     };
   });

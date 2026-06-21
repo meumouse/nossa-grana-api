@@ -1,19 +1,57 @@
 import type { FastifyInstance } from 'fastify';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { BadRequest, NotFound } from '../../lib/errors';
 import { requireRole } from '../../plugins/workspace';
 import { addMonths } from '../../lib/dates';
 import { Decimal } from '../../lib/money';
+import { txShareSchema } from '../sync/sync.schemas';
 
-const createSchema = z.object({
-  clientId: z.string().uuid().optional(),
-  accountId: z.string().min(1),
-  description: z.string().min(1).max(200),
-  totalAmount: z.coerce.number().positive(),
-  installments: z.number().int().min(2).max(360),
-  firstDueDate: z.coerce.date(),
-  categoryId: z.string().nullable().optional(),
-});
+const createSchema = z
+  .object({
+    clientId: z.string().uuid().optional(),
+    // Dono das parcelas: conta OU cartão (exatamente um). Parcelar no cartão é
+    // o caso comum.
+    accountId: z.string().min(1).optional(),
+    creditCardId: z.string().min(1).optional(),
+    description: z.string().min(1).max(200),
+    totalAmount: z.coerce.number().positive(),
+    installments: z.number().int().min(2).max(360),
+    // Parcela em que o parcelamento se encontra (1 = nova compra). As parcelas
+    // anteriores a esta são criadas já como pagas (COMPLETED). `firstDueDate`
+    // representa o vencimento DESTA parcela.
+    startInstallment: z.coerce.number().int().min(1).optional().default(1),
+    firstDueDate: z.coerce.date(),
+    categoryId: z.string().nullable().optional(),
+    // Divisão entre pessoas. shares inclui o dono (owner: true). Lista vazia/ausente
+    // = sem divisão. shareCount default = nº de participantes informados.
+    shares: z.array(txShareSchema).max(100).nullable().optional(),
+    shareCount: z.number().int().min(1).nullable().optional(),
+  })
+  .refine((b) => b.startInstallment <= b.installments, {
+    message: 'A parcela inicial não pode ser maior que o total de parcelas',
+    path: ['startInstallment'],
+  })
+  .refine((b) => (b.accountId ? 1 : 0) + (b.creditCardId ? 1 : 0) === 1, {
+    message: 'Informe exatamente um entre accountId e creditCardId',
+    path: ['accountId'],
+  });
+
+type ShareRow = { name: string; paid: boolean; owner?: boolean };
+
+/**
+ * Normaliza o rateio do parcelamento: garante exatamente um dono (pago) no topo.
+ * Cada parcela recebe depois um clone deste modelo, com estado de pagamento
+ * independente. Devolve `null` quando não há ao menos uma outra pessoa.
+ */
+function normalizeShares(raw: z.infer<typeof createSchema>['shares']): ShareRow[] | null {
+  if (!raw || raw.length === 0) return null;
+  const owner = raw.find((s) => s.owner);
+  const others = raw.filter((s) => !s.owner);
+  if (others.length === 0) return null;
+  const rest: ShareRow[] = others.map((s) => ({ name: s.name, paid: s.paid }));
+  return owner ? [{ name: owner.name, paid: true, owner: true }, ...rest] : rest;
+}
 
 /** Divide o total em N parcelas (centavos do resto vão na última). */
 function splitAmount(total: Decimal, n: number): Decimal[] {
@@ -47,13 +85,31 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
   app.post('/', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
     const body = createSchema.parse(request.body);
 
-    const account = await app.prisma.account.findFirst({
-      where: { id: body.accountId, workspaceId: request.workspace!.id, deletedAt: null },
-      select: { id: true },
-    });
-    if (!account) throw BadRequest('Conta inválida para este workspace');
+    if (body.creditCardId) {
+      const card = await app.prisma.creditCard.findFirst({
+        where: { id: body.creditCardId, workspaceId: request.workspace!.id, deletedAt: null },
+        select: { id: true },
+      });
+      if (!card) throw BadRequest('Cartão inválido para este workspace');
+    } else {
+      const account = await app.prisma.account.findFirst({
+        where: { id: body.accountId, workspaceId: request.workspace!.id, deletedAt: null },
+        select: { id: true },
+      });
+      if (!account) throw BadRequest('Conta inválida para este workspace');
+    }
 
     const amounts = splitAmount(new Decimal(body.totalAmount), body.installments);
+
+    // Divisão entre pessoas (opcional). O modelo fica no plano; cada parcela
+    // recebe um clone com seu próprio estado de pagamento.
+    const shares = normalizeShares(body.shares);
+    const shared = shares !== null;
+    const shareCount = shared ? Math.max(body.shareCount ?? shares.length, shares.length) : null;
+
+    // `firstDueDate` é o vencimento da parcela inicial (startInstallment).
+    // A 1ª parcela do plano fica `startInstallment - 1` meses antes.
+    const planFirstDue = addMonths(body.firstDueDate, -(body.startInstallment - 1));
 
     const plan = await app.prisma.$transaction(async (tx) => {
       const created = await tx.installmentPlan.create({
@@ -63,27 +119,39 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
           description: body.description,
           totalAmount: body.totalAmount,
           installments: body.installments,
-          firstDueDate: body.firstDueDate,
+          firstDueDate: planFirstDue,
           categoryId: body.categoryId ?? null,
+          shared,
+          shareCount,
+          shares: shared ? (shares as Prisma.InputJsonValue) : Prisma.DbNull,
         },
       });
 
       await tx.transaction.createMany({
         data: amounts.map((amount, i) => {
-          const due = addMonths(body.firstDueDate, i);
+          const number = i + 1;
+          const due = addMonths(planFirstDue, i);
+          // Parcelas anteriores à inicial já estão quitadas.
+          const isPaid = number < body.startInstallment;
           return {
             workspaceId: request.workspace!.id,
-            accountId: body.accountId,
+            accountId: body.accountId ?? null,
+            creditCardId: body.creditCardId ?? null,
             type: 'EXPENSE' as const,
-            status: 'PENDING' as const,
+            status: isPaid ? ('COMPLETED' as const) : ('PENDING' as const),
+            paidAt: isPaid ? due : null,
             amount,
-            description: `${body.description} (${i + 1}/${body.installments})`,
+            description: `${body.description} (${number}/${body.installments})`,
             categoryId: body.categoryId ?? null,
             date: due,
             dueDate: due,
             installmentPlanId: created.id,
-            installmentNumber: i + 1,
+            installmentNumber: number,
             createdById: request.userId!,
+            shared,
+            shareCount,
+            // Clona o modelo p/ cada parcela ter estado de pagamento próprio.
+            shares: shared ? (shares.map((s) => ({ ...s })) as Prisma.InputJsonValue) : Prisma.DbNull,
           };
         }),
       });

@@ -9,6 +9,7 @@ import membersRoutes from './modules/members/members.routes';
 import invitationsScopedRoutes from './modules/invitations/invitations.routes';
 import institutionsRoutes from './modules/institutions/institutions.routes';
 import accountsRoutes from './modules/accounts/accounts.routes';
+import cardsRoutes from './modules/cards/cards.routes';
 import categoriesRoutes from './modules/categories/categories.routes';
 import tagsRoutes from './modules/tags/tags.routes';
 import transactionsRoutes from './modules/transactions/transactions.routes';
@@ -40,6 +41,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       scoped.register(invitationsScopedRoutes, { prefix: '/invitations' });
       scoped.register(institutionsRoutes, { prefix: '/institutions' });
       scoped.register(accountsRoutes, { prefix: '/accounts' });
+      scoped.register(cardsRoutes, { prefix: '/cards' });
       scoped.register(categoriesRoutes, { prefix: '/categories' });
       scoped.register(tagsRoutes, { prefix: '/tags' });
       scoped.register(transactionsRoutes, { prefix: '/transactions' });

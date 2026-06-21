@@ -1,4 +1,4 @@
-import type { Account, Prisma, PrismaClient } from '@prisma/client';
+import type { CreditCard, Prisma, PrismaClient } from '@prisma/client';
 import { startOfDayUTC, withDayOfMonth } from '../../lib/dates';
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -27,29 +27,29 @@ export function cycleFor(
 
 /**
  * Garante a fatura (aberta) do ciclo de uma compra no cartão. Idempotente via
- * unique (accountId, closingDate). Retorna null se o cartão não tem dias
+ * unique (creditCardId, closingDate). Retorna null se o cartão não tem dias
  * configurados.
  */
 export async function getOrCreateOpenInvoice(
   db: Db,
-  account: Pick<Account, 'id' | 'workspaceId' | 'type' | 'statementClosingDay' | 'paymentDueDay'>,
+  card: Pick<CreditCard, 'id' | 'workspaceId' | 'statementClosingDay' | 'paymentDueDay'>,
   purchaseDate: Date,
 ): Promise<{ id: string } | null> {
-  if (account.type !== 'CREDIT_CARD' || account.statementClosingDay == null || account.paymentDueDay == null) {
+  if (card.statementClosingDay == null || card.paymentDueDay == null) {
     return null;
   }
   const { closingDate, dueDate } = cycleFor(
     purchaseDate,
-    account.statementClosingDay,
-    account.paymentDueDay,
+    card.statementClosingDay,
+    card.paymentDueDay,
   );
 
   const invoice = await db.creditCardInvoice.upsert({
-    where: { accountId_closingDate: { accountId: account.id, closingDate } },
+    where: { creditCardId_closingDate: { creditCardId: card.id, closingDate } },
     update: {},
     create: {
-      workspaceId: account.workspaceId,
-      accountId: account.id,
+      workspaceId: card.workspaceId,
+      creditCardId: card.id,
       closingDate,
       dueDate,
       status: 'OPEN',

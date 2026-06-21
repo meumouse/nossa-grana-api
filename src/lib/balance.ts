@@ -53,9 +53,11 @@ export async function workspaceBalances(
     select: { id: true, openingBalance: true },
   });
 
+  // accountId é nulável (transações de cartão usam creditCardId) — filtramos
+  // para somar apenas as pernas que pertencem a uma conta.
   const grouped = await db.transaction.groupBy({
     by: ['accountId', 'type'],
-    where: { workspaceId, status: 'COMPLETED', deletedAt: null },
+    where: { workspaceId, status: 'COMPLETED', deletedAt: null, accountId: { not: null } },
     _sum: { amount: true },
   });
 
@@ -63,6 +65,7 @@ export async function workspaceBalances(
   for (const a of accounts) result.set(a.id, new Decimal(a.openingBalance));
 
   for (const g of grouped) {
+    if (g.accountId == null) continue;
     const current = result.get(g.accountId);
     if (!current) continue; // conta arquivada/excluída
     const v = g._sum.amount ?? new Decimal(0);
@@ -76,17 +79,17 @@ export async function workspaceBalances(
 
 /**
  * Limite disponível de um cartão = creditLimit − Σ compras não pagas
- * (transações EXPENSE do cartão fora de fatura PAID).
+ * (transações EXPENSE do cartão fora de fatura PAID). null se sem limite definido.
  */
 export async function creditCardAvailable(
   db: Db,
-  account: { id: string; creditLimit: Prisma.Decimal | null },
+  card: { id: string; creditLimit: Prisma.Decimal | null },
 ): Promise<Decimal | null> {
-  if (account.creditLimit == null) return null;
+  if (card.creditLimit == null) return null;
 
   const unpaid = await db.transaction.aggregate({
     where: {
-      accountId: account.id,
+      creditCardId: card.id,
       type: 'EXPENSE',
       deletedAt: null,
       OR: [{ creditCardInvoice: { is: null } }, { creditCardInvoice: { status: { not: 'PAID' } } }],
@@ -95,5 +98,33 @@ export async function creditCardAvailable(
   });
 
   const used = unpaid._sum.amount ?? new Decimal(0);
-  return new Decimal(account.creditLimit).minus(used);
+  return new Decimal(card.creditLimit).minus(used);
+}
+
+/**
+ * "Usado" (Σ compras não pagas) de TODOS os cartões de um workspace, em lote —
+ * evita N+1 na listagem. O disponível = creditLimit − usado é montado na rota.
+ */
+export async function workspaceCardsUsed(
+  db: Db,
+  workspaceId: string,
+): Promise<Map<string, Decimal>> {
+  const grouped = await db.transaction.groupBy({
+    by: ['creditCardId'],
+    where: {
+      workspaceId,
+      type: 'EXPENSE',
+      deletedAt: null,
+      creditCardId: { not: null },
+      OR: [{ creditCardInvoice: { is: null } }, { creditCardInvoice: { status: { not: 'PAID' } } }],
+    },
+    _sum: { amount: true },
+  });
+
+  const result = new Map<string, Decimal>();
+  for (const g of grouped) {
+    if (g.creditCardId == null) continue;
+    result.set(g.creditCardId, g._sum.amount ?? new Decimal(0));
+  }
+  return result;
 }

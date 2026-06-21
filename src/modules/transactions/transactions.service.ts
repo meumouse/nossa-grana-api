@@ -22,22 +22,27 @@ type AnalyzeInput = z.infer<typeof analyzeSchema>;
 const txInclude = {
   category: { select: { id: true, name: true, kind: true, nature: true, color: true, icon: true } },
   account: { select: { id: true, name: true, type: true } },
+  creditCard: { select: { id: true, name: true } },
   tags: { select: { id: true, name: true, color: true } },
 } satisfies Prisma.TransactionInclude;
 
 async function assertAccount(db: PrismaClient, workspaceId: string, accountId: string) {
   const acc = await db.account.findFirst({
     where: { id: accountId, workspaceId, deletedAt: null },
-    select: {
-      id: true,
-      workspaceId: true,
-      type: true,
-      statementClosingDay: true,
-      paymentDueDay: true,
-    },
+    select: { id: true, workspaceId: true, type: true },
   });
   if (!acc) throw BadRequest('Conta inválida para este workspace');
   return acc;
+}
+
+/** Valida o cartão e devolve os dados de ciclo p/ vincular a compra à fatura. */
+async function assertCard(db: PrismaClient, workspaceId: string, creditCardId: string) {
+  const card = await db.creditCard.findFirst({
+    where: { id: creditCardId, workspaceId, deletedAt: null },
+    select: { id: true, workspaceId: true, statementClosingDay: true, paymentDueDay: true },
+  });
+  if (!card) throw BadRequest('Cartão inválido para este workspace');
+  return card;
 }
 
 async function tagConnect(db: PrismaClient, workspaceId: string, tagIds?: string[]) {
@@ -52,6 +57,7 @@ export async function listTransactions(db: PrismaClient, workspaceId: string, q:
     workspaceId,
     deletedAt: null,
     ...(q.accountId ? { accountId: q.accountId } : {}),
+    ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
     ...(q.categoryId ? { categoryId: q.categoryId } : {}),
     ...(q.type ? { type: q.type } : {}),
     ...(q.status ? { status: q.status } : {}),
@@ -108,13 +114,19 @@ export async function createTransaction(
   ctx: { workspaceId: string; userId: string },
   input: CreateInput,
 ) {
-  const account = await assertAccount(db, ctx.workspaceId, input.accountId);
+  // Dono: conta OU cartão (o schema garante exatamente um).
+  const card = input.creditCardId ? await assertCard(db, ctx.workspaceId, input.creditCardId) : null;
+  if (!card) {
+    if (!input.accountId) throw BadRequest('Informe a conta ou o cartão do lançamento');
+    await assertAccount(db, ctx.workspaceId, input.accountId);
+  }
+
   const tags = await tagConnect(db, ctx.workspaceId, input.tagIds);
 
   // Compra no cartão: vincula automaticamente à fatura do ciclo, se não veio uma.
   let invoiceId = input.creditCardInvoiceId ?? null;
-  if (!invoiceId && input.type === 'EXPENSE' && account.type === 'CREDIT_CARD') {
-    const invoice = await getOrCreateOpenInvoice(db, account, input.date);
+  if (!invoiceId && input.type === 'EXPENSE' && card) {
+    const invoice = await getOrCreateOpenInvoice(db, card, input.date);
     invoiceId = invoice?.id ?? null;
   }
 
@@ -122,7 +134,8 @@ export async function createTransaction(
     data: {
       workspaceId: ctx.workspaceId,
       clientId: input.clientId ?? null,
-      accountId: input.accountId,
+      accountId: input.accountId ?? null,
+      creditCardId: input.creditCardId ?? null,
       type: input.type,
       status: input.status,
       amount: input.amount,
@@ -166,13 +179,22 @@ export async function updateTransaction(
     throw BadRequest('Edite transferências excluindo e recriando (mantém as duas pernas íntegras)');
   }
 
-  if (input.accountId) await assertAccount(db, ctx.workspaceId, input.accountId);
+  // Troca de dono (opcional): conta OU cartão. Ao definir um, zera o outro.
+  let owner: { accountId?: string | null; creditCardId?: string | null } = {};
+  if (input.creditCardId) {
+    await assertCard(db, ctx.workspaceId, input.creditCardId);
+    owner = { creditCardId: input.creditCardId, accountId: null };
+  } else if (input.accountId) {
+    await assertAccount(db, ctx.workspaceId, input.accountId);
+    owner = { accountId: input.accountId, creditCardId: null };
+  }
+
   const tags = input.tagIds ? await tagConnect(db, ctx.workspaceId, input.tagIds) : undefined;
 
   return db.transaction.update({
     where: { id },
     data: {
-      accountId: input.accountId,
+      ...owner,
       type: input.type,
       status: input.status,
       amount: input.amount,
@@ -289,6 +311,76 @@ export async function createTransfer(
     entityType: 'Transaction',
     entityId: outLeg.id,
     metadata: { amount: input.amount, transferId },
+  });
+
+  return { transferId, legs: [outLeg, inLeg] };
+}
+
+/**
+ * Pagamento de fatura: TRANSFER da conta corrente → cartão. Modelado como duas
+ * pernas (como qualquer transferência), mas a contrapartida de uma é um CARTÃO,
+ * não outra conta. A perna da conta tem amount NEGATIVO (sai dinheiro da conta);
+ * a perna do cartão é só o registro do pagamento (cartão não tem saldo). Por ser
+ * TRANSFER, não conta como despesa nos relatórios — evita duplicar o gasto, que
+ * já foi lançado nas compras do cartão.
+ */
+export async function createCardPayment(
+  db: PrismaClient,
+  ctx: { workspaceId: string; userId: string },
+  input: {
+    fromAccountId: string;
+    creditCardId: string;
+    amount: number;
+    description: string;
+    date: Date;
+    status?: 'COMPLETED' | 'PENDING';
+  },
+) {
+  await assertAccount(db, ctx.workspaceId, input.fromAccountId);
+  await assertCard(db, ctx.workspaceId, input.creditCardId);
+
+  const status = input.status ?? 'COMPLETED';
+  const transferId = randomUUID();
+  const common = {
+    workspaceId: ctx.workspaceId,
+    type: 'TRANSFER' as const,
+    status,
+    currency: 'BRL',
+    description: input.description,
+    date: input.date,
+    paidAt: status === 'COMPLETED' ? input.date : null,
+    transferId,
+    createdById: ctx.userId,
+  };
+
+  const [outLeg, inLeg] = await db.$transaction([
+    db.transaction.create({
+      data: {
+        ...common,
+        accountId: input.fromAccountId,
+        counterCreditCardId: input.creditCardId,
+        amount: -Math.abs(input.amount), // sai da conta
+      },
+      include: txInclude,
+    }),
+    db.transaction.create({
+      data: {
+        ...common,
+        creditCardId: input.creditCardId,
+        counterAccountId: input.fromAccountId,
+        amount: Math.abs(input.amount), // entra no cartão (quita a fatura)
+      },
+      include: txInclude,
+    }),
+  ]);
+
+  await logActivity(db, {
+    workspaceId: ctx.workspaceId,
+    actorId: ctx.userId,
+    action: 'invoice.paid',
+    entityType: 'Transaction',
+    entityId: outLeg.id,
+    metadata: { amount: input.amount, transferId, creditCardId: input.creditCardId },
   });
 
   return { transferId, legs: [outLeg, inLeg] };

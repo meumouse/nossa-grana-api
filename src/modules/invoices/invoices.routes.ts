@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { BadRequest, NotFound } from '../../lib/errors';
 import { requireRole } from '../../plugins/workspace';
 import { Decimal } from '../../lib/money';
-import { createTransfer } from '../transactions/transactions.service';
+import { createCardPayment } from '../transactions/transactions.service';
 
 const paySchema = z.object({
   paymentAccountId: z.string().optional(),
@@ -20,9 +20,9 @@ async function invoiceTotal(app: FastifyInstance, invoiceId: string): Promise<De
 
 export default async function invoicesRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', async (request) => {
-    const { accountId, status } = z
+    const { creditCardId, status } = z
       .object({
-        accountId: z.string().optional(),
+        creditCardId: z.string().optional(),
         status: z.enum(['OPEN', 'CLOSED', 'PAID', 'OVERDUE']).optional(),
       })
       .parse(request.query);
@@ -30,7 +30,7 @@ export default async function invoicesRoutes(app: FastifyInstance): Promise<void
     const invoices = await app.prisma.creditCardInvoice.findMany({
       where: {
         workspaceId: request.workspace!.id,
-        ...(accountId ? { accountId } : {}),
+        ...(creditCardId ? { creditCardId } : {}),
         ...(status ? { status } : {}),
       },
       orderBy: { closingDate: 'desc' },
@@ -47,7 +47,7 @@ export default async function invoicesRoutes(app: FastifyInstance): Promise<void
     const invoice = await app.prisma.creditCardInvoice.findFirst({
       where: { id, workspaceId: request.workspace!.id },
       include: {
-        account: { select: { id: true, name: true, paymentAccountId: true } },
+        creditCard: { select: { id: true, name: true, paymentAccountId: true } },
         transactions: {
           where: { deletedAt: null },
           include: { category: { select: { id: true, name: true, color: true, icon: true } } },
@@ -69,12 +69,12 @@ export default async function invoicesRoutes(app: FastifyInstance): Promise<void
 
     const invoice = await app.prisma.creditCardInvoice.findFirst({
       where: { id, workspaceId: request.workspace!.id },
-      include: { account: { select: { id: true, name: true, paymentAccountId: true } } },
+      include: { creditCard: { select: { id: true, name: true, paymentAccountId: true } } },
     });
     if (!invoice) throw NotFound('Fatura não encontrada');
     if (invoice.status === 'PAID') throw BadRequest('Fatura já paga');
 
-    const paymentAccountId = body.paymentAccountId ?? invoice.account.paymentAccountId;
+    const paymentAccountId = body.paymentAccountId ?? invoice.creditCard.paymentAccountId;
     if (!paymentAccountId) {
       throw BadRequest('Defina a conta de pagamento (paymentAccountId) ou configure-a no cartão');
     }
@@ -84,14 +84,14 @@ export default async function invoicesRoutes(app: FastifyInstance): Promise<void
 
     const paidAt = body.paidAt ?? new Date();
 
-    const transfer = await createTransfer(
+    const transfer = await createCardPayment(
       app.prisma,
       { workspaceId: request.workspace!.id, userId: request.userId! },
       {
         fromAccountId: paymentAccountId,
-        toAccountId: invoice.account.id,
+        creditCardId: invoice.creditCard.id,
         amount: Number(total.toFixed(2)),
-        description: `Pagamento fatura ${invoice.account.name}`,
+        description: `Pagamento fatura ${invoice.creditCard.name}`,
         date: paidAt,
         status: 'COMPLETED',
       },

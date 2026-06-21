@@ -1,8 +1,11 @@
 import { z } from 'zod';
 
-export const createTxSchema = z.object({
+// Dono do lançamento: EXATAMENTE UM entre accountId (conta) e creditCardId
+// (cartão). Compra no cartão usa creditCardId.
+const createTxBase = z.object({
   clientId: z.string().uuid().optional(),
-  accountId: z.string().min(1),
+  accountId: z.string().min(1).optional(),
+  creditCardId: z.string().min(1).optional(),
   type: z.enum(['INCOME', 'EXPENSE']), // TRANSFER tem endpoint próprio
   status: z.enum(['COMPLETED', 'PENDING', 'CANCELED']).default('COMPLETED'),
   amount: z.coerce.number().positive('O valor deve ser maior que zero'),
@@ -17,10 +20,23 @@ export const createTxSchema = z.object({
   tagIds: z.array(z.string()).optional(),
 });
 
-export const updateTxSchema = createTxSchema
+const exactlyOneOwner = (b: { accountId?: string; creditCardId?: string }) =>
+  (b.accountId ? 1 : 0) + (b.creditCardId ? 1 : 0) === 1;
+
+export const createTxSchema = createTxBase.refine(exactlyOneOwner, {
+  message: 'Informe exatamente um entre accountId e creditCardId',
+  path: ['accountId'],
+});
+
+export const updateTxSchema = createTxBase
   .partial()
   .omit({ clientId: true })
-  .extend({ type: z.enum(['INCOME', 'EXPENSE']).optional() });
+  .extend({ type: z.enum(['INCOME', 'EXPENSE']).optional() })
+  // No update, se vier um dono, não pode vir os dois ao mesmo tempo.
+  .refine((b) => !(b.accountId && b.creditCardId), {
+    message: 'Informe apenas um entre accountId e creditCardId',
+    path: ['accountId'],
+  });
 
 export const transferSchema = z.object({
   clientId: z.string().uuid().optional(),
@@ -59,6 +75,7 @@ export const analyzeSchema = z.object({
 
 export const listQuerySchema = z.object({
   accountId: z.string().optional(),
+  creditCardId: z.string().optional(),
   categoryId: z.string().optional(),
   type: z.enum(['INCOME', 'EXPENSE', 'TRANSFER']).optional(),
   status: z.enum(['COMPLETED', 'PENDING', 'CANCELED']).optional(),

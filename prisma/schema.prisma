@@ -40,14 +40,14 @@ model User {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  memberships        Member[]
-  preferences        UserPreferences?
-  sessions           Session[]
-  oauthAccounts      OAuthAccount[]
-  verificationTokens VerificationToken[]
-  createdTransactions Transaction[]   @relation("TransactionCreatedBy")
-  sentInvitations    Invitation[]     @relation("InvitationInvitedBy")
-  activities         ActivityLog[]
+  memberships         Member[]
+  preferences         UserPreferences?
+  sessions            Session[]
+  oauthAccounts       OAuthAccount[]
+  verificationTokens  VerificationToken[]
+  createdTransactions Transaction[]       @relation("TransactionCreatedBy")
+  sentInvitations     Invitation[]        @relation("InvitationInvitedBy")
+  activities          ActivityLog[]
 }
 
 // Token de uso único p/ fluxos por e-mail (recuperação de senha, verificação de
@@ -73,15 +73,15 @@ enum VerificationPurpose {
 
 // Sessão por refresh-token (auth stateless: access JWT curto + refresh rotativo)
 model Session {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  refreshToken String   @unique
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken String    @unique
   deviceId     String? // identifica o dispositivo p/ sync e revogação seletiva
   userAgent    String?
   ip           String?
   expiresAt    DateTime
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
   revokedAt    DateTime?
 
   @@index([userId])
@@ -104,13 +104,13 @@ model UserPreferences {
   userId String @unique
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  theme               Theme   @default(SYSTEM)
-  defaultWorkspaceId  String?
-  hideBalances        Boolean @default(false) // "modo privacidade" (esconde valores)
-  notificationsPush   Boolean @default(true)
-  notificationsEmail  Boolean @default(false)
+  theme              Theme   @default(SYSTEM)
+  defaultWorkspaceId String?
+  hideBalances       Boolean @default(false) // "modo privacidade" (esconde valores)
+  notificationsPush  Boolean @default(true)
+  notificationsEmail Boolean @default(false)
   // preferências livres adicionais (ordem de cards do dashboard, etc.)
-  ui                  Json?
+  ui                 Json?
 
   updatedAt DateTime @updatedAt
 }
@@ -128,29 +128,30 @@ enum Theme {
 // ============================================================================
 
 model Workspace {
-  id           String        @id @default(cuid())
-  name         String
-  type         WorkspaceType @default(PERSONAL)
-  iconColor    String? // cor/identidade visual
+  id        String        @id @default(cuid())
+  name      String
+  type      WorkspaceType @default(PERSONAL)
+  iconColor String? // cor/identidade visual
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  members              Member[]
-  invitations          Invitation[]
-  settings             WorkspaceSettings?
-  accounts             Account[]
-  categories           Category[]
-  tags                 Tag[]
-  transactions         Transaction[]
-  budgets              Budget[]
+  members               Member[]
+  invitations           Invitation[]
+  settings              WorkspaceSettings?
+  accounts              Account[]
+  creditCards           CreditCard[]
+  categories            Category[]
+  tags                  Tag[]
+  transactions          Transaction[]
+  budgets               Budget[]
   recurringTransactions RecurringTransaction[]
-  installmentPlans     InstallmentPlan[]
-  creditCardInvoices   CreditCardInvoice[]
-  investmentAssets     InvestmentAsset[]
-  activities           ActivityLog[]
-  importBatches        ImportBatch[]
+  installmentPlans      InstallmentPlan[]
+  creditCardInvoices    CreditCardInvoice[]
+  investmentAssets      InvestmentAsset[]
+  activities            ActivityLog[]
+  importBatches         ImportBatch[]
 }
 
 enum WorkspaceType {
@@ -159,18 +160,18 @@ enum WorkspaceType {
 }
 
 model WorkspaceSettings {
-  id          String @id @default(cuid())
-  workspaceId String @unique
+  id          String    @id @default(cuid())
+  workspaceId String    @unique
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  baseCurrency      String  @default("BRL") // moeda de consolidação
+  baseCurrency       String  @default("BRL") // moeda de consolidação
   // Dia em que o "mês financeiro" começa (1 = dia do mês civil). Útil p/ quem
   // organiza por data de salário em vez do calendário.
-  monthStartDay     Int     @default(1)
+  monthStartDay      Int     @default(1)
   // Quantos meses à frente materializar recorrências/parcelas p/ previsão.
-  forecastHorizon   Int     @default(12)
+  forecastHorizon    Int     @default(12)
   // Meses de histórico usados na média móvel de gastos variáveis (previsão).
-  variableLookback  Int     @default(3)
+  variableLookback   Int     @default(3)
   weekStartsOnMonday Boolean @default(true)
 
   // Pessoas cadastradas p/ rateio de transações compartilhadas (autocomplete no
@@ -181,14 +182,14 @@ model WorkspaceSettings {
   // --- Importação por IA (sobrescreve os defaults de env por workspace) ---
   // null em qualquer campo = usa o valor do env. A chave é guardada cifrada
   // (AES-256-GCM) e NUNCA é devolvida ao cliente — só um booleano "set".
-  llmProvider       String? // ex.: "openai"
-  llmModel          String? // ex.: "gpt-4o"
-  llmApiKey         String? // ciphertext da chave do provider
+  llmProvider        String? // ex.: "openai"
+  llmModel           String? // ex.: "gpt-4o"
+  llmApiKey          String? // ciphertext da chave do provider
   // Cache da última busca de modelos do provider (JSON: [{ id, label }]). Fica
   // salvo p/ o seletor de modelo continuar populado após recarregar a página,
   // sem precisar rebuscar na API toda vez. Reescrito a cada "Buscar modelos".
   llmModels          Json?
-  llmModelsProvider  String?   // provider a que a lista cacheada pertence
+  llmModelsProvider  String? // provider a que a lista cacheada pertence
   llmModelsFetchedAt DateTime? // quando a lista foi buscada pela última vez
 
   updatedAt DateTime @updatedAt
@@ -213,8 +214,8 @@ model Member {
 }
 
 enum MemberRole {
-  OWNER  // dono — pode excluir o workspace e gerenciar billing
-  ADMIN  // gerencia membros e configurações
+  OWNER // dono — pode excluir o workspace e gerenciar billing
+  ADMIN // gerencia membros e configurações
   MEMBER // cria/edita lançamentos
   VIEWER // somente leitura
 }
@@ -260,65 +261,58 @@ model Institution {
   brandColor  String?
   workspaceId String? // null = global (seed); preenchido = institução custom do usuário
 
-  accounts Account[]
+  accounts    Account[]
+  creditCards CreditCard[]
 
   @@index([workspaceId])
 }
 
 model Account {
-  id            String      @id @default(cuid())
-  clientId      String?     @unique
+  id            String       @id @default(cuid())
+  clientId      String?      @unique
   workspaceId   String
-  workspace     Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   institutionId String?
   institution   Institution? @relation(fields: [institutionId], references: [id])
 
-  name        String
-  type        AccountType
-  currency    String      @default("BRL")
-  iconColor   String?
+  name           String
+  type           AccountType
+  currency       String      @default("BRL")
+  iconColor      String?
   // Saldo INICIAL (abertura). O saldo atual é DERIVADO: openingBalance + soma das
   // transações COMPLETED da conta. Não armazene saldo "vivo" — calcule/caching.
-  openingBalance Decimal  @db.Decimal(18, 2) @default(0)
+  openingBalance Decimal     @default(0) @db.Decimal(18, 2)
   // Inclui no patrimônio/consolidação do dashboard?
-  includeInTotal Boolean  @default(true)
-  archived       Boolean  @default(false)
-  sortOrder      Int      @default(0)
+  includeInTotal Boolean     @default(true)
+  archived       Boolean     @default(false)
+  sortOrder      Int         @default(0)
 
-  // --- Específico de CARTÃO DE CRÉDITO (type = CREDIT_CARD) ---
-  creditLimit       Decimal? @db.Decimal(18, 2)
-  statementClosingDay Int?   // dia de fechamento da fatura (1-31)
-  paymentDueDay       Int?   // dia de vencimento da fatura (1-31)
-  // juros por atraso no pagamento da fatura (taxa mensal, ex.: 0.0899 = 8,99% a.m.)
-  lateInterestRate    Decimal? @db.Decimal(9, 6)
-  // conta de onde a fatura é paga por padrão (corrente)
-  paymentAccountId    String?
-  paymentAccount      Account?  @relation("CardPaymentAccount", fields: [paymentAccountId], references: [id])
-  cardsPaidByThis     Account[] @relation("CardPaymentAccount")
+  // Cartões de crédito cuja fatura é paga a partir desta conta (relação inversa
+  // de CreditCard.paymentAccount). Cartão é entidade SEPARADA — ver model CreditCard.
+  cardsPaidFromHere CreditCard[] @relation("CardPaymentAccount")
 
   // --- Específico de CONTA BANCÁRIA (type = CHECKING/SAVINGS) ---
   // Dados bancários. Strings para preservar zeros à esquerda.
-  agency        String?  // agência (ex.: "0001")
-  accountNumber String?  // número da conta (ex.: "12345")
-  accountDigit  String?  // dígito verificador da conta (ex.: "6")
+  agency                String? // agência (ex.: "0001")
+  accountNumber         String? // número da conta (ex.: "12345")
+  accountDigit          String? // dígito verificador da conta (ex.: "6")
   // LIS / cheque especial: limite de crédito rotativo da conta.
   overdraftLimit        Decimal? @db.Decimal(18, 2)
   // juros do limite/conta (taxa mensal, ex.: 0.08 = 8% a.m.)
   overdraftInterestRate Decimal? @db.Decimal(9, 6)
 
   // --- Específico de FINANCIAMENTO/EMPRÉSTIMO (type = LOAN) ---
-  loanPrincipal       Decimal? @db.Decimal(18, 2) // valor financiado
-  loanInstallments    Int?     // nº total de parcelas
-  loanInterestRate    Decimal? @db.Decimal(9, 6)  // taxa mensal (ex.: 0.0149 = 1,49% a.m.)
-  loanStartDate       DateTime?
+  loanPrincipal    Decimal?  @db.Decimal(18, 2) // valor financiado
+  loanInstallments Int? // nº total de parcelas
+  loanInterestRate Decimal?  @db.Decimal(9, 6) // taxa mensal (ex.: 0.0149 = 1,49% a.m.)
+  loanStartDate    DateTime?
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  transactions        Transaction[] @relation("AccountTransactions")
-  counterTransactions Transaction[] @relation("AccountCounterparty")
-  creditCardInvoices  CreditCardInvoice[]
+  transactions           Transaction[]           @relation("AccountTransactions")
+  counterTransactions    Transaction[]           @relation("AccountCounterparty")
   investmentTransactions InvestmentTransaction[]
 
   @@index([workspaceId])
@@ -326,15 +320,57 @@ model Account {
 }
 
 enum AccountType {
-  CHECKING     // conta corrente
-  SAVINGS      // poupança
-  CASH         // dinheiro/carteira
-  CREDIT_CARD  // cartão de crédito
-  DEBIT_CARD   // cartão de débito (geralmente atrelado a CHECKING)
+  CHECKING // conta corrente
+  SAVINGS // poupança
+  CASH // dinheiro/carteira
+  DEBIT_CARD // cartão de débito (geralmente atrelado a CHECKING)
   MEAL_VOUCHER // VR/VA
-  INVESTMENT   // conta/corretora de investimentos
-  LOAN         // financiamento/empréstimo
+  INVESTMENT // conta/corretora de investimentos
+  LOAN // financiamento/empréstimo
   OTHER
+}
+
+// ----------------------------------------------------------------------------
+//  CARTÃO DE CRÉDITO — entidade SEPARADA de Account (decisão de modelagem).
+//  Diferente de uma conta, um cartão NÃO tem saldo (openingBalance) nem entra
+//  no patrimônio: o que ele tem é LIMITE e FATURA. A "dívida" vive na
+//  CreditCardInvoice; o limite disponível é derivado das compras não pagas.
+//  Uma compra no cartão é uma Transaction com `creditCardId` preenchido
+//  (em vez de `accountId`). O pagamento da fatura é uma TRANSFER conta → cartão.
+// ----------------------------------------------------------------------------
+model CreditCard {
+  id            String       @id @default(cuid())
+  clientId      String?      @unique
+  workspaceId   String
+  workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  institutionId String?
+  institution   Institution? @relation(fields: [institutionId], references: [id])
+
+  name      String
+  currency  String  @default("BRL")
+  iconColor String?
+  archived  Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  // Limite total e ciclo da fatura.
+  creditLimit         Decimal? @db.Decimal(18, 2)
+  statementClosingDay Int? // dia de fechamento da fatura (1-31)
+  paymentDueDay       Int? // dia de vencimento da fatura (1-31)
+  // juros por atraso no pagamento da fatura (taxa mensal, ex.: 0.0899 = 8,99% a.m.)
+  lateInterestRate    Decimal? @db.Decimal(9, 6)
+  // conta corrente de onde a fatura é paga por padrão
+  paymentAccountId    String?
+  paymentAccount      Account? @relation("CardPaymentAccount", fields: [paymentAccountId], references: [id])
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transactions        Transaction[]       @relation("CardTransactions")
+  counterTransactions Transaction[]       @relation("CardCounterparty")
+  invoices            CreditCardInvoice[]
+
+  @@index([workspaceId])
 }
 
 // ============================================================================
@@ -344,24 +380,24 @@ enum AccountType {
 // ============================================================================
 
 model Category {
-  id          String         @id @default(cuid())
-  clientId    String?        @unique
+  id          String    @id @default(cuid())
+  clientId    String?   @unique
   workspaceId String
-  workspace   Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  name      String
-  kind      CategoryKind // receita ou despesa
-  nature    CategoryNature @default(VARIABLE)
-  icon      String?
-  color     String?
+  name   String
+  kind   CategoryKind // receita ou despesa
+  nature CategoryNature @default(VARIABLE)
+  icon   String?
+  color  String?
 
   // hierarquia: categoria -> subcategorias
   parentId String?
   parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
   children Category[] @relation("CategoryTree")
 
-  sortOrder Int      @default(0)
-  archived  Boolean  @default(false)
+  sortOrder Int     @default(0)
+  archived  Boolean @default(false)
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -381,11 +417,11 @@ enum CategoryKind {
 }
 
 enum CategoryNature {
-  FIXED      // gasto fixo (aluguel, mensalidade)
-  VARIABLE   // gasto variável (mercado, transporte)
-  LEISURE    // lazer
+  FIXED // gasto fixo (aluguel, mensalidade)
+  VARIABLE // gasto variável (mercado, transporte)
+  LEISURE // lazer
   INVESTMENT // aporte
-  INCOME     // entrada
+  INCOME // entrada
   OTHER
 }
 
@@ -411,9 +447,9 @@ model Budget {
   category    Category? @relation(fields: [categoryId], references: [id])
 
   // mês de referência normalizado p/ o dia 1 (ex.: 2026-06-01)
-  month   DateTime @db.Date
-  amount  Decimal  @db.Decimal(18, 2)
-  rollover Boolean @default(false) // sobra/excesso acumula no mês seguinte?
+  month    DateTime @db.Date
+  amount   Decimal  @db.Decimal(18, 2)
+  rollover Boolean  @default(false) // sobra/excesso acumula no mês seguinte?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -433,13 +469,19 @@ model Budget {
 // ============================================================================
 
 model Transaction {
-  id          String            @id @default(cuid())
-  clientId    String?           @unique // idempotência offline
+  id          String    @id @default(cuid())
+  clientId    String?   @unique // idempotência offline
   workspaceId String
-  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  accountId String
-  account   Account @relation("AccountTransactions", fields: [accountId], references: [id])
+  // Dono da transação: EXATAMENTE UM de accountId/creditCardId é preenchido
+  // (invariante de aplicação — Prisma não força XOR). Compra no cartão usa
+  // creditCardId; lançamento bancário usa accountId.
+  accountId String?
+  account   Account? @relation("AccountTransactions", fields: [accountId], references: [id])
+
+  creditCardId String?
+  creditCard   CreditCard? @relation("CardTransactions", fields: [creditCardId], references: [id])
 
   type     TransactionType
   status   TransactionStatus @default(COMPLETED)
@@ -464,9 +506,13 @@ model Transaction {
   createdBy   User?   @relation("TransactionCreatedBy", fields: [createdById], references: [id])
 
   // --- TRANSFERÊNCIA ---
-  transferId       String?  // agrupa as duas pernas
-  counterAccountId String?
-  counterAccount   Account? @relation("AccountCounterparty", fields: [counterAccountId], references: [id])
+  transferId          String? // agrupa as duas pernas
+  counterAccountId    String?
+  counterAccount      Account?    @relation("AccountCounterparty", fields: [counterAccountId], references: [id])
+  // Contrapartida quando a outra perna é um cartão (ex.: pagamento de fatura:
+  // perna de saída na conta aponta o cartão; perna de entrada no cartão aponta a conta).
+  counterCreditCardId String?
+  counterCreditCard   CreditCard? @relation("CardCounterparty", fields: [counterCreditCardId], references: [id])
 
   // --- PARCELAMENTO ---
   installmentPlanId String?
@@ -504,6 +550,7 @@ model Transaction {
   @@index([workspaceId, date])
   @@index([workspaceId, status, dueDate]) // contas a pagar/receber
   @@index([accountId, date])
+  @@index([creditCardId, date])
   @@index([categoryId])
   @@index([transferId])
   @@index([installmentPlanId])
@@ -518,7 +565,7 @@ enum TransactionType {
 
 enum TransactionStatus {
   COMPLETED // efetivada (entra no saldo)
-  PENDING   // prevista/não paga (conta a pagar/receber)
+  PENDING // prevista/não paga (conta a pagar/receber)
   CANCELED
 }
 
@@ -547,12 +594,20 @@ model InstallmentPlan {
   workspaceId String
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  description     String
-  totalAmount     Decimal  @db.Decimal(18, 2)
-  installments    Int      // nº de parcelas
-  firstDueDate    DateTime
-  categoryId      String?
-  category        Category? @relation(fields: [categoryId], references: [id])
+  description  String
+  totalAmount  Decimal   @db.Decimal(18, 2)
+  installments Int // nº de parcelas
+  firstDueDate DateTime
+  categoryId   String?
+  category     Category? @relation(fields: [categoryId], references: [id])
+
+  // Divisão do parcelamento entre pessoas. Espelha o rateio de Transaction:
+  // shared = dividido; shareCount = total de pessoas (inclui o dono); shares
+  // guarda os participantes "modelo" ([{ name, paid, owner }]). Cada parcela
+  // gerada nasce como transação compartilhada com seu próprio estado de pagamento.
+  shared     Boolean @default(false)
+  shareCount Int?
+  shares     Json?
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -574,21 +629,21 @@ model RecurringTransaction {
 
   accountId   String
   type        TransactionType
-  amount      Decimal   @db.Decimal(18, 2)
+  amount      Decimal         @db.Decimal(18, 2)
   description String
   categoryId  String?
-  category    Category? @relation(fields: [categoryId], references: [id])
+  category    Category?       @relation(fields: [categoryId], references: [id])
 
-  frequency RecurrenceFrequency
-  interval  Int      @default(1) // a cada N (ex.: interval=2 + WEEKLY = quinzenal)
+  frequency         RecurrenceFrequency
+  interval          Int                 @default(1) // a cada N (ex.: interval=2 + WEEKLY = quinzenal)
   // dia/regra de ancoragem (dia do mês p/ MONTHLY, dia da semana p/ WEEKLY...)
-  anchorDay Int?
-  startDate DateTime
-  endDate   DateTime? // null = sem fim
+  anchorDay         Int?
+  startDate         DateTime
+  endDate           DateTime? // null = sem fim
   // até quando já foi materializado (controle do job)
   materializedUntil DateTime?
-  isActive  Boolean  @default(true)
-  autoConfirm Boolean @default(false) // efetiva sozinho na data?
+  isActive          Boolean             @default(true)
+  autoConfirm       Boolean             @default(false) // efetiva sozinho na data?
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -613,11 +668,11 @@ enum RecurrenceFrequency {
 // ============================================================================
 
 model CreditCardInvoice {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  accountId   String
-  account     Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id           String     @id @default(cuid())
+  workspaceId  String
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creditCardId String
+  creditCard   CreditCard @relation(fields: [creditCardId], references: [id], onDelete: Cascade)
 
   // período do ciclo
   closingDate DateTime
@@ -630,13 +685,13 @@ model CreditCardInvoice {
 
   transactions Transaction[]
 
-  @@unique([accountId, closingDate])
+  @@unique([creditCardId, closingDate])
   @@index([workspaceId, status])
 }
 
 enum InvoiceStatus {
-  OPEN    // ciclo em aberto, ainda acumulando compras
-  CLOSED  // fechada, aguardando pagamento
+  OPEN // ciclo em aberto, ainda acumulando compras
+  CLOSED // fechada, aguardando pagamento
   PAID
   OVERDUE
 }
@@ -656,8 +711,8 @@ model InvestmentAsset {
   class       InvestmentClass
   currency    String          @default("BRL")
   // última cotação conhecida (atualizada por integração ou manualmente)
-  lastPrice      Decimal?  @db.Decimal(18, 8)
-  lastPriceAt    DateTime?
+  lastPrice   Decimal?        @db.Decimal(18, 8)
+  lastPriceAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -668,27 +723,27 @@ model InvestmentAsset {
 }
 
 enum InvestmentClass {
-  STOCK         // ação
-  FII           // fundo imobiliário
+  STOCK // ação
+  FII // fundo imobiliário
   ETF
-  FUND          // fundo
-  FIXED_INCOME  // renda fixa (CDB, Tesouro...)
+  FUND // fundo
+  FIXED_INCOME // renda fixa (CDB, Tesouro...)
   CRYPTO
   OTHER
 }
 
 model InvestmentTransaction {
-  id        String   @id @default(cuid())
-  clientId  String?  @unique
+  id        String          @id @default(cuid())
+  clientId  String?         @unique
   accountId String
-  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account   Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
   assetId   String
   asset     InvestmentAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
   kind      InvestmentTxKind
-  quantity  Decimal  @db.Decimal(18, 8)
-  unitPrice Decimal  @db.Decimal(18, 8)
-  fees      Decimal  @db.Decimal(18, 2) @default(0)
+  quantity  Decimal          @db.Decimal(18, 8)
+  unitPrice Decimal          @db.Decimal(18, 8)
+  fees      Decimal          @default(0) @db.Decimal(18, 2)
   date      DateTime
 
   createdAt DateTime  @default(now())
@@ -702,8 +757,8 @@ model InvestmentTransaction {
 enum InvestmentTxKind {
   BUY
   SELL
-  DIVIDEND   // provento
-  INTEREST   // juros/rendimento
+  DIVIDEND // provento
+  INTEREST // juros/rendimento
   CONTRIBUTION
   WITHDRAWAL
 }
@@ -800,16 +855,16 @@ enum ImportSource {
 }
 
 enum ImportStatus {
-  PROCESSING     // extração em andamento
+  PROCESSING // extração em andamento
   PENDING_REVIEW // extraído, aguardando revisão do usuário
-  IMPORTING      // confirmado; criando as transações em background (fila)
-  CONFIRMED      // itens aceitos viraram transações
+  IMPORTING // confirmado; criando as transações em background (fila)
+  CONFIRMED // itens aceitos viraram transações
   CANCELED
   FAILED
 }
 
 enum ImportItemStatus {
-  PENDING  // aguardando decisão na revisão
+  PENDING // aguardando decisão na revisão
   ACCEPTED // marcado para importar
   REJECTED // descartado pelo usuário
   IMPORTED // já virou Transaction

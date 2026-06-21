@@ -1,12 +1,14 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import type {
   AccountChange,
+  CreditCardChange,
   CategoryChange,
   TransactionChange,
 } from './sync.schemas';
 
 export interface PushPayload {
   accounts: AccountChange[];
+  creditCards: CreditCardChange[];
   categories: CategoryChange[];
   transactions: TransactionChange[];
 }
@@ -52,7 +54,28 @@ export async function push(
     idMap.set(c.clientId, rec.id);
   }
 
-  // 2) Categorias (parentId pode referenciar uma categoria criada agora)
+  // 2) Cartões de crédito (paymentAccountId pode referenciar uma conta criada agora)
+  for (const c of payload.creditCards) {
+    if (c.deleted) {
+      const found = await db.creditCard.findUnique({ where: { clientId: c.clientId }, select: { id: true, workspaceId: true } });
+      if (found && found.workspaceId === workspaceId) {
+        await db.creditCard.update({ where: { id: found.id }, data: { deletedAt: new Date() } });
+        idMap.set(c.clientId, found.id);
+      }
+      continue;
+    }
+    if (!c.data) continue;
+    const data = { ...c.data, paymentAccountId: resolveRef(idMap, c.data.paymentAccountId) ?? null };
+    const rec = await db.creditCard.upsert({
+      where: { clientId: c.clientId },
+      create: { ...data, clientId: c.clientId, workspaceId },
+      update: { ...data, deletedAt: null },
+      select: { id: true },
+    });
+    idMap.set(c.clientId, rec.id);
+  }
+
+  // 3) Categorias (parentId pode referenciar uma categoria criada agora)
   for (const c of payload.categories) {
     if (c.deleted) {
       const found = await db.category.findUnique({ where: { clientId: c.clientId }, select: { id: true, workspaceId: true } });
@@ -73,7 +96,7 @@ export async function push(
     idMap.set(c.clientId, rec.id);
   }
 
-  // 3) Transações (resolve accountId/categoryId via idMap)
+  // 4) Transações (resolve accountId/creditCardId/categoryId via idMap)
   for (const c of payload.transactions) {
     if (c.deleted) {
       const found = await db.transaction.findUnique({ where: { clientId: c.clientId }, select: { id: true, workspaceId: true } });
@@ -84,10 +107,13 @@ export async function push(
       continue;
     }
     if (!c.data) continue;
-    const accountId = resolveRef(idMap, c.data.accountId);
-    if (!accountId) continue;
+    const accountId = resolveRef(idMap, c.data.accountId) ?? null;
+    const creditCardId = resolveRef(idMap, c.data.creditCardId) ?? null;
+    // Precisa de exatamente um dono (conta ou cartão); sem isso, ignora.
+    if (!accountId && !creditCardId) continue;
     const data = {
       accountId,
+      creditCardId,
       type: c.data.type,
       status: c.data.status,
       amount: c.data.amount,
@@ -129,8 +155,9 @@ export async function pull(db: PrismaClient, workspaceId: string, since?: Date) 
   const updatedFilter = since ? { gt: since } : undefined;
   const base = { workspaceId, ...(updatedFilter ? { updatedAt: updatedFilter } : {}) };
 
-  const [accounts, categories, transactions] = await Promise.all([
+  const [accounts, creditCards, categories, transactions] = await Promise.all([
     db.account.findMany({ where: base, orderBy: { updatedAt: 'asc' } }),
+    db.creditCard.findMany({ where: base, orderBy: { updatedAt: 'asc' } }),
     db.category.findMany({ where: base, orderBy: { updatedAt: 'asc' } }),
     db.transaction.findMany({
       where: base,
@@ -139,5 +166,5 @@ export async function pull(db: PrismaClient, workspaceId: string, since?: Date) 
     }),
   ]);
 
-  return { serverTime, accounts, categories, transactions };
+  return { serverTime, accounts, creditCards, categories, transactions };
 }
