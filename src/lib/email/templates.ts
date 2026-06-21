@@ -127,6 +127,39 @@ ${url}`;
   return { subject: `Confirme seu e-mail — ${BRAND}`, html, text };
 }
 
+export function invitationEmail(params: {
+  inviterName?: string | null;
+  workspaceName: string;
+  url: string;
+  ttlDays: number;
+}): RenderedEmail {
+  const { inviterName, workspaceName, url, ttlDays } = params;
+  const who = inviterName ? escapeHtml(inviterName) : 'Alguém';
+  const ws = escapeHtml(workspaceName);
+  const html = layout(`
+    <p style="margin:0 0 16px;">Olá!</p>
+    <p style="margin:0 0 16px;">
+      <strong>${who}</strong> convidou você para participar do perfil
+      <strong>${ws}</strong> no ${BRAND} e cuidar das finanças em conjunto.
+    </p>
+    <p style="margin:0 0 24px;">${button(url, 'Aceitar convite')}</p>
+    <p style="margin:0 0 8px;color:#6b7280;font-size:13px;">
+      Este convite expira em ${ttlDays} dia(s). Se você ainda não tem conta,
+      poderá criá-la em seguida com este mesmo e-mail.
+    </p>
+    <p style="margin:16px 0 0;color:#9ca3af;font-size:12px;word-break:break-all;">
+      Ou copie e cole este endereço no navegador:<br/>${escapeHtml(url)}
+    </p>
+  `);
+  const text = `Olá!
+
+${inviterName ?? 'Alguém'} convidou você para participar do perfil "${workspaceName}" no ${BRAND}.
+Abra o link abaixo para aceitar (expira em ${ttlDays} dia(s)):
+
+${url}`;
+  return { subject: `Convite para "${workspaceName}" — ${BRAND}`, html, text };
+}
+
 export function welcomeEmail(params: { name?: string | null; appUrl: string }): RenderedEmail {
   const { name, appUrl } = params;
   const html = layout(`

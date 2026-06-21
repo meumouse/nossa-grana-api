@@ -1,6 +1,7 @@
 import { Resend } from 'resend';
 import { emailEnabled, env } from '../../env';
 import {
+  invitationEmail,
   passwordResetEmail,
   verificationEmail,
   welcomeEmail,
@@ -79,4 +80,11 @@ export function sendVerificationEmail(
 
 export function sendWelcomeEmail(to: string, params: { name?: string | null }): Promise<void> {
   return send(to, welcomeEmail({ ...params, appUrl: env.APP_URL }));
+}
+
+export function sendInvitationEmail(
+  to: string,
+  params: { inviterName?: string | null; workspaceName: string; url: string },
+): Promise<void> {
+  return send(to, invitationEmail({ ...params, ttlDays: env.INVITATION_TTL_DAYS }));
 }

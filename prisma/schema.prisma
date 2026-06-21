@@ -224,7 +224,11 @@ model Invitation {
   id          String           @id @default(cuid())
   workspaceId String
   workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  email       String
+  // Canal de envio: ao menos um de email/phone é preenchido (validado na API).
+  email       String?
+  phone       String? // E.164 (ex.: +5511988887777)
+  // Apelido sugerido p/ o membro dentro do workspace (ex.: "Mãe", "Pai").
+  displayName String?
   role        MemberRole       @default(MEMBER)
   token       String           @unique
   status      InvitationStatus @default(PENDING)
@@ -237,6 +241,7 @@ model Invitation {
 
   @@index([workspaceId])
   @@index([email])
+  @@index([phone])
 }
 
 enum InvitationStatus {
