@@ -46,7 +46,7 @@ const createSchema = z
     path: ['accountId'],
   });
 
-type ShareRow = { name: string; paid: boolean; owner?: boolean };
+type ShareRow = { name: string; paid: boolean; owner?: boolean; userId?: string | null };
 
 /**
  * Normaliza o rateio do parcelamento: garante exatamente um dono (pago) no topo.
@@ -58,7 +58,7 @@ function normalizeShares(raw: z.infer<typeof createSchema>['shares']): ShareRow[
   const owner = raw.find((s) => s.owner);
   const others = raw.filter((s) => !s.owner);
   if (others.length === 0) return null;
-  const rest: ShareRow[] = others.map((s) => ({ name: s.name, paid: s.paid }));
+  const rest: ShareRow[] = others.map((s) => ({ name: s.name, paid: s.paid, userId: s.userId ?? null }));
   return owner ? [{ name: owner.name, paid: true, owner: true }, ...rest] : rest;
 }
 

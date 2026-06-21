@@ -52,6 +52,9 @@ export const txShareSchema = z.object({
   name: z.string().min(1).max(80),
   paid: z.boolean().default(false),
   owner: z.boolean().optional(),
+  // Vínculo opcional a um membro real do workspace (User.id). Quando presente,
+  // a parte cai no painel "Despesas que você deve pagar" desse membro.
+  userId: z.string().min(1).nullable().optional(),
 });
 
 const transactionData = z.object({
