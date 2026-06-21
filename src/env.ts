@@ -42,12 +42,15 @@ const schema = z.object({
   EMAIL_VERIFICATION_TTL_HOURS: z.coerce.number().int().positive().default(24),
 
   // --- Importação por LLM (extratos, comprovantes) ---
-  // Provider trocável: hoje "openai"; novos providers entram em src/lib/llm.
-  LLM_PROVIDER: z.enum(['openai']).default('openai'),
-  // Modelo configurável; precisa suportar visão p/ imagens e leitura de PDF.
+  // Provider trocável (default global; cada workspace pode sobrescrever).
+  LLM_PROVIDER: z.enum(['openai', 'anthropic', 'google']).default('openai'),
+  // Modelo default p/ o provider de env; precisa suportar visão (imagem/PDF).
   LLM_MODEL: z.string().default('gpt-4o'),
   LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
+  // Chaves de API por provider (fallback global; o workspace pode definir a sua).
   OPENAI_API_KEY: z.string().optional(),
+  ANTHROPIC_API_KEY: z.string().optional(),
+  GOOGLE_API_KEY: z.string().optional(),
   // Limite de upload do documento a importar (em MB).
   IMPORT_MAX_FILE_MB: z.coerce.number().int().positive().default(15),
 
@@ -81,12 +84,26 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-// Validação condicional: a chave da OpenAI só é exigida quando esse é o provider.
-if (parsed.data.LLM_PROVIDER === 'openai' && !parsed.data.OPENAI_API_KEY) {
-  // eslint-disable-next-line no-console
-  console.warn(
-    '⚠️  LLM_PROVIDER=openai mas OPENAI_API_KEY não definida — a importação de documentos por IA vai falhar até configurar.',
-  );
+// Validação condicional: a chave do provider default só é exigida quando ele é
+// o provider em uso (o workspace pode configurar a sua própria chave depois).
+{
+  const keyByProvider = {
+    openai: parsed.data.OPENAI_API_KEY,
+    anthropic: parsed.data.ANTHROPIC_API_KEY,
+    google: parsed.data.GOOGLE_API_KEY,
+  } as const;
+  const envName = {
+    openai: 'OPENAI_API_KEY',
+    anthropic: 'ANTHROPIC_API_KEY',
+    google: 'GOOGLE_API_KEY',
+  } as const;
+  const provider = parsed.data.LLM_PROVIDER;
+  if (!keyByProvider[provider]) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `⚠️  LLM_PROVIDER=${provider} mas ${envName[provider]} não definida — a importação por IA vai falhar até configurar (no env ou nas Configurações do workspace).`,
+    );
+  }
 }
 
 // E-mail: sem chave do Resend, os envios são pulados (não é erro fatal).

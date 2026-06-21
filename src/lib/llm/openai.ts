@@ -1,11 +1,11 @@
 import OpenAI from 'openai';
 import type { ChatCompletionContentPart } from 'openai/resources/chat/completions';
 import { BadRequest } from '../errors';
+import { coerceCategories, coerceExtraction } from './parse';
 import type { DocumentExtractor } from './provider';
 import type {
   CategorizeInput,
   ExtractDocumentInput,
-  ExtractedType,
   ExtractionResult,
   LlmConfig,
 } from './types';
@@ -18,36 +18,6 @@ import {
 
 function dataUrl(mimeType: string, data: Buffer): string {
   return `data:${mimeType};base64,${data.toString('base64')}`;
-}
-
-/** Parse defensivo: o LLM pode devolver número/forma fora do esperado. */
-function coerceItems(parsed: unknown): ExtractionResult {
-  const obj = (parsed ?? {}) as Record<string, unknown>;
-  const rawItems = Array.isArray(obj.items) ? obj.items : [];
-  const items = rawItems
-    .map((it) => {
-      const r = (it ?? {}) as Record<string, unknown>;
-      const amount = typeof r.amount === 'number' ? Math.abs(r.amount) : Number(r.amount);
-      const type: ExtractedType = r.type === 'INCOME' ? 'INCOME' : 'EXPENSE';
-      const date = typeof r.date === 'string' ? r.date : '';
-      const description = typeof r.description === 'string' ? r.description.trim() : '';
-      return {
-        date,
-        description,
-        amount: Number.isFinite(amount) ? amount : 0,
-        type,
-        suggestedCategory: typeof r.suggestedCategory === 'string' ? r.suggestedCategory : null,
-        confidence: typeof r.confidence === 'number' ? r.confidence : null,
-      };
-    })
-    // descarta linhas claramente inválidas (sem valor ou sem descrição/data)
-    .filter((it) => it.amount > 0 && it.description.length > 0 && it.date.length > 0);
-
-  return {
-    items,
-    detectedCurrency: typeof obj.detectedCurrency === 'string' ? obj.detectedCurrency : null,
-    notes: typeof obj.notes === 'string' ? obj.notes : null,
-  };
 }
 
 export class OpenAIExtractor implements DocumentExtractor {
@@ -105,7 +75,7 @@ export class OpenAIExtractor implements DocumentExtractor {
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw BadRequest('A IA não retornou conteúdo para o documento.');
-    return coerceItems(JSON.parse(content));
+    return coerceExtraction(JSON.parse(content));
   }
 
   async categorizeRows(input: CategorizeInput): Promise<(string | null)[]> {
@@ -136,9 +106,6 @@ export class OpenAIExtractor implements DocumentExtractor {
     const content = completion.choices[0]?.message?.content;
     if (!content) return input.rows.map(() => null);
 
-    const parsed = JSON.parse(content) as { categories?: unknown };
-    const cats = Array.isArray(parsed.categories) ? parsed.categories : [];
-    // garante alinhamento por índice com as linhas de entrada
-    return input.rows.map((_, i) => (typeof cats[i] === 'string' ? (cats[i] as string) : null));
+    return coerceCategories(input.rows.length, JSON.parse(content));
   }
 }

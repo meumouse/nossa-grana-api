@@ -7,7 +7,15 @@
 export type ExtractedType = 'INCOME' | 'EXPENSE';
 
 /** Providers de LLM suportados. */
-export type LlmProvider = 'openai';
+export type LlmProvider = 'openai' | 'anthropic' | 'google';
+
+/** Um modelo disponível em um provider, devolvido pela busca via API. */
+export interface LlmModelInfo {
+  /** Identificador usado nas chamadas (ex.: "gpt-4o", "claude-opus-4-8"). */
+  id: string;
+  /** Rótulo amigável quando o provider fornece (ex.: "Claude Opus 4.8"). */
+  label?: string | null;
+}
 
 /**
  * Configuração resolvida do provider de LLM para uma requisição. Vem das

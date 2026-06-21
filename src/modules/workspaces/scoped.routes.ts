@@ -1,14 +1,23 @@
 import type { FastifyInstance } from 'fastify';
 import type { WorkspaceSettings } from '@prisma/client';
 import { z } from 'zod';
-import { NotFound } from '../../lib/errors';
-import { encryptSecret } from '../../lib/secrets';
+import { env } from '../../env';
+import { BadRequest, NotFound } from '../../lib/errors';
+import {
+  envApiKeyFor,
+  isLlmProvider,
+  listProviderModels,
+  type LlmProvider,
+} from '../../lib/llm';
+import { decryptSecret, encryptSecret } from '../../lib/secrets';
 import { requireRole } from '../../plugins/workspace';
 
 const updateSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   iconColor: z.string().max(20).optional(),
 });
+
+const providerEnum = z.enum(['openai', 'anthropic', 'google']);
 
 const settingsSchema = z.object({
   baseCurrency: z.string().length(3).optional(),
@@ -17,9 +26,16 @@ const settingsSchema = z.object({
   variableLookback: z.number().int().min(1).max(12).optional(),
   weekStartsOnMonday: z.boolean().optional(),
   // Importação por IA. String vazia limpa o campo (volta ao default de env).
-  llmProvider: z.enum(['openai']).optional(),
+  llmProvider: providerEnum.optional(),
   llmModel: z.string().max(80).optional(),
   llmApiKey: z.string().max(300).optional(),
+});
+
+// Busca de modelos: o provider/chave podem vir do corpo (ainda não salvos),
+// senão caímos nas settings do workspace e, por fim, no default de env.
+const llmModelsSchema = z.object({
+  provider: providerEnum.optional(),
+  apiKey: z.string().max(300).optional(),
 });
 
 /** Remove a chave crua da resposta; expõe só se está configurada. */
@@ -85,5 +101,28 @@ export default async function workspaceScopedRoutes(app: FastifyInstance): Promi
       create: { workspaceId: request.workspace!.id, ...data },
     });
     return { settings: publicSettings(settings) };
+  });
+
+  // Lista os modelos disponíveis no provider via API. A chave pode vir no corpo
+  // (p/ testar uma que o usuário acabou de digitar e ainda não salvou), senão
+  // usa a do workspace (decifrada) ou a de env. Só ADMIN, como as demais de IA.
+  app.post('/settings/llm/models', { preHandler: [requireRole('ADMIN')] }, async (request) => {
+    const body = llmModelsSchema.parse(request.body ?? {});
+    const settings = await app.prisma.workspaceSettings.findUnique({
+      where: { workspaceId: request.workspace!.id },
+      select: { llmProvider: true, llmApiKey: true },
+    });
+
+    const rawProvider = body.provider || settings?.llmProvider || env.LLM_PROVIDER;
+    const provider: LlmProvider = isLlmProvider(rawProvider) ? rawProvider : 'openai';
+
+    const apiKey =
+      body.apiKey?.trim() || decryptSecret(settings?.llmApiKey) || envApiKeyFor(provider);
+    if (!apiKey) {
+      throw BadRequest('Configure a chave de API do provedor para buscar os modelos.');
+    }
+
+    const models = await listProviderModels(provider, apiKey);
+    return { provider, models };
   });
 }
