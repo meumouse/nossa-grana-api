@@ -835,6 +835,7 @@ model ImportItem {
   suggestedCategory String?
   categoryId        String?
   accountId         String?
+  creditCardId      String? // dono alternativo: lançamento vai p/ um cartão (XOR accountId)
 
   status        ImportItemStatus @default(PENDING)
   transactionId String? // Transaction criada ao confirmar (link)

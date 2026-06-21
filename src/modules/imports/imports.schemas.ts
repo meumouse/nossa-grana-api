@@ -8,13 +8,15 @@ export const patchItemSchema = z.object({
   type: z.enum(['INCOME', 'EXPENSE']).optional(),
   categoryId: z.string().nullable().optional(),
   accountId: z.string().nullable().optional(),
+  creditCardId: z.string().nullable().optional(),
   status: z.enum(['PENDING', 'ACCEPTED', 'REJECTED']).optional(),
 });
 
 /** Confirmação do lote: cria as transações dos itens ACCEPTED. */
 export const confirmSchema = z.object({
-  // conta usada para itens que ficaram sem conta definida na revisão
+  // conta ou cartão usado para itens que ficaram sem dono definido na revisão
   defaultAccountId: z.string().optional(),
+  defaultCreditCardId: z.string().optional(),
 });
 
 export const listQuerySchema = z.object({

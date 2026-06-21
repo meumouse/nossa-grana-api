@@ -21,12 +21,12 @@ export function startImportWorker(db: PrismaClient, log: FastifyBaseLogger): () 
   const worker = new Worker<ConfirmImportJobData>(
     IMPORT_QUEUE_NAME,
     async (job: Job<ConfirmImportJobData>) => {
-      const { batchId, workspaceId, userId, defaultAccountId } = job.data;
+      const { batchId, workspaceId, userId, defaultAccountId, defaultCreditCardId } = job.data;
       const imported = await processConfirmBatch(
         db,
         { workspaceId, userId },
         batchId,
-        { defaultAccountId },
+        { defaultAccountId, defaultCreditCardId },
       );
       return { imported };
     },

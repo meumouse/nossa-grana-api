@@ -48,6 +48,14 @@ async function assertAccount(db: PrismaClient, workspaceId: string, accountId: s
   if (!acc) throw BadRequest('Conta inválida para este workspace');
 }
 
+async function assertCard(db: PrismaClient, workspaceId: string, creditCardId: string) {
+  const card = await db.creditCard.findFirst({
+    where: { id: creditCardId, workspaceId, deletedAt: null },
+    select: { id: true },
+  });
+  if (!card) throw BadRequest('Cartão inválido para este workspace');
+}
+
 async function assertCategory(db: PrismaClient, workspaceId: string, categoryId: string) {
   const cat = await db.category.findFirst({
     where: { id: categoryId, workspaceId, deletedAt: null },
@@ -89,6 +97,7 @@ interface CreateBatchInput {
   mimeType: string;
   data: Buffer;
   defaultAccountId?: string;
+  defaultCreditCardId?: string;
 }
 
 /**
@@ -97,6 +106,7 @@ interface CreateBatchInput {
  */
 export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatchInput) {
   if (input.defaultAccountId) await assertAccount(db, ctx.workspaceId, input.defaultAccountId);
+  if (input.defaultCreditCardId) await assertCard(db, ctx.workspaceId, input.defaultCreditCardId);
 
   const settings = await db.workspaceSettings.findUnique({
     where: { workspaceId: ctx.workspaceId },
@@ -184,6 +194,7 @@ export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatch
           suggestedCategory: it.suggestedCategory ?? null,
           categoryId: matchCategory(categories, it.suggestedCategory),
           accountId: input.defaultAccountId ?? null,
+          creditCardId: input.defaultCreditCardId ?? null,
           confidence: it.confidence ?? null,
           status: 'PENDING' as const,
         };
@@ -220,7 +231,17 @@ export async function patchItem(
   if (item.status === 'IMPORTED') throw BadRequest('Item já foi importado e não pode ser editado');
 
   if (input.accountId) await assertAccount(db, workspaceId, input.accountId);
+  if (input.creditCardId) await assertCard(db, workspaceId, input.creditCardId);
   if (input.categoryId) await assertCategory(db, workspaceId, input.categoryId);
+
+  // Dono é exclusivo (conta XOR cartão): definir um zera o outro. Só mexe nos
+  // campos de dono quando o patch realmente envia algum deles.
+  const ownerPatch =
+    input.accountId !== undefined || input.creditCardId !== undefined
+      ? input.creditCardId
+        ? { creditCardId: input.creditCardId, accountId: null }
+        : { accountId: input.accountId ?? null, creditCardId: null }
+      : {};
 
   return db.importItem.update({
     where: { id: itemId },
@@ -230,7 +251,7 @@ export async function patchItem(
       amount: input.amount,
       type: input.type,
       categoryId: input.categoryId,
-      accountId: input.accountId,
+      ...ownerPatch,
       status: input.status,
     },
   });
@@ -265,6 +286,7 @@ export async function confirmBatch(
     throw BadRequest('Esta importação já está sendo processada.');
   }
   if (input.defaultAccountId) await assertAccount(db, ctx.workspaceId, input.defaultAccountId);
+  if (input.defaultCreditCardId) await assertCard(db, ctx.workspaceId, input.defaultCreditCardId);
 
   const pending = await db.importItem.count({ where: { batchId, status: 'ACCEPTED' } });
   if (pending === 0) throw BadRequest('Nenhum item marcado para importar.');
@@ -277,6 +299,7 @@ export async function confirmBatch(
       workspaceId: ctx.workspaceId,
       userId: ctx.userId,
       defaultAccountId: input.defaultAccountId,
+      defaultCreditCardId: input.defaultCreditCardId,
     });
     const result = await getBatch(db, ctx.workspaceId, batchId);
     return { batch: result, queued: true as const };
@@ -308,14 +331,21 @@ export async function processConfirmBatch(
 
     let imported = 0;
     for (const item of items) {
-      const accountId = item.accountId ?? input.defaultAccountId;
-      if (!accountId) {
-        throw BadRequest(`Defina a conta do lançamento "${item.description}" antes de confirmar.`);
+      // Dono do lançamento: o do item tem prioridade; cai no padrão do lote.
+      // Cartão prevalece sobre conta quando ambos resolverem (createTransaction
+      // também ignora a conta se vier cartão).
+      const creditCardId = item.creditCardId ?? (item.accountId ? null : input.defaultCreditCardId);
+      const accountId = creditCardId ? null : item.accountId ?? input.defaultAccountId;
+      if (!accountId && !creditCardId) {
+        throw BadRequest(
+          `Defina a conta ou o cartão do lançamento "${item.description}" antes de confirmar.`,
+        );
       }
 
       const tx = await createTransaction(db, ctx, {
         clientId: randomUUID(),
-        accountId,
+        accountId: accountId ?? undefined,
+        creditCardId: creditCardId ?? undefined,
         type: item.type as 'INCOME' | 'EXPENSE',
         status: 'COMPLETED',
         amount: Number(item.amount),
