@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type { ChatCompletionContentPart } from 'openai/resources/chat/completions';
 import { BadRequest } from '../errors';
+import { rethrowLlmError } from './llm-error';
 import { coerceCategories, coerceExtraction } from './parse';
 import type { DocumentExtractor } from './provider';
 import type {
@@ -50,28 +51,30 @@ export class OpenAIExtractor implements DocumentExtractor {
             },
           };
 
-    const completion = await this.client.chat.completions.create({
-      model: this.model,
-      max_completion_tokens: this.maxOutputTokens,
-      messages: [
-        { role: 'system', content: buildExtractionPrompt(input.categoryNames) },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: 'Extraia as transações deste documento.' },
-            filePart,
-          ],
+    const completion = await this.client.chat.completions
+      .create({
+        model: this.model,
+        max_completion_tokens: this.maxOutputTokens,
+        messages: [
+          { role: 'system', content: buildExtractionPrompt(input.categoryNames) },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Extraia as transações deste documento.' },
+              filePart,
+            ],
+          },
+        ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'extraction',
+            strict: true,
+            schema: extractionJsonSchema as unknown as Record<string, unknown>,
+          },
         },
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'extraction',
-          strict: true,
-          schema: extractionJsonSchema as unknown as Record<string, unknown>,
-        },
-      },
-    });
+      })
+      .catch((err) => rethrowLlmError(err, 'OpenAI'));
 
     const content = completion.choices[0]?.message?.content;
     if (!content) throw BadRequest('A IA não retornou conteúdo para o documento.');
@@ -81,27 +84,29 @@ export class OpenAIExtractor implements DocumentExtractor {
   async categorizeRows(input: CategorizeInput): Promise<(string | null)[]> {
     if (input.rows.length === 0) return [];
 
-    const completion = await this.client.chat.completions.create({
-      model: this.model,
-      max_completion_tokens: this.maxOutputTokens,
-      messages: [
-        { role: 'system', content: buildCategorizePrompt(input.categoryNames) },
-        {
-          role: 'user',
-          content: JSON.stringify(
-            input.rows.map((r, i) => ({ index: i, description: r.description, type: r.type })),
-          ),
+    const completion = await this.client.chat.completions
+      .create({
+        model: this.model,
+        max_completion_tokens: this.maxOutputTokens,
+        messages: [
+          { role: 'system', content: buildCategorizePrompt(input.categoryNames) },
+          {
+            role: 'user',
+            content: JSON.stringify(
+              input.rows.map((r, i) => ({ index: i, description: r.description, type: r.type })),
+            ),
+          },
+        ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'categorize',
+            strict: true,
+            schema: categorizeJsonSchema as unknown as Record<string, unknown>,
+          },
         },
-      ],
-      response_format: {
-        type: 'json_schema',
-        json_schema: {
-          name: 'categorize',
-          strict: true,
-          schema: categorizeJsonSchema as unknown as Record<string, unknown>,
-        },
-      },
-    });
+      })
+      .catch((err) => rethrowLlmError(err, 'OpenAI'));
 
     const content = completion.choices[0]?.message?.content;
     if (!content) return input.rows.map(() => null);

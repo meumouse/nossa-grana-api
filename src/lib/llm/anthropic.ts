@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BadRequest } from '../errors';
+import { rethrowLlmError } from './llm-error';
 import { coerceCategories, coerceExtraction } from './parse';
 import type { DocumentExtractor } from './provider';
 import type { CategorizeInput, ExtractDocumentInput, ExtractionResult, LlmConfig } from './types';
@@ -46,14 +47,16 @@ export class AnthropicExtractor implements DocumentExtractor {
     system: string,
     userContent: Anthropic.ContentBlockParam[],
   ): Promise<unknown> {
-    const message = await this.client.messages.create({
-      model: this.model,
-      max_tokens: this.maxOutputTokens,
-      system,
-      tools: [{ name: toolName, description: 'Retorna o resultado estruturado.', input_schema: schema }],
-      tool_choice: { type: 'tool', name: toolName },
-      messages: [{ role: 'user', content: userContent }],
-    });
+    const message = await this.client.messages
+      .create({
+        model: this.model,
+        max_tokens: this.maxOutputTokens,
+        system,
+        tools: [{ name: toolName, description: 'Retorna o resultado estruturado.', input_schema: schema }],
+        tool_choice: { type: 'tool', name: toolName },
+        messages: [{ role: 'user', content: userContent }],
+      })
+      .catch((err) => rethrowLlmError(err, 'Anthropic'));
     const block = message.content.find((b) => b.type === 'tool_use');
     return block && block.type === 'tool_use' ? block.input : null;
   }

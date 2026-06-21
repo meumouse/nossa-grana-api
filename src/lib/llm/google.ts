@@ -1,4 +1,5 @@
 import { BadRequest } from '../errors';
+import { rethrowLlmError } from './llm-error';
 import { coerceCategories, coerceExtraction } from './parse';
 import type { DocumentExtractor } from './provider';
 import type { CategorizeInput, ExtractDocumentInput, ExtractionResult, LlmConfig } from './types';
@@ -72,26 +73,31 @@ export class GoogleExtractor implements DocumentExtractor {
   }
 
   private async generate(system: string, parts: GeminiPart[], responseSchema: object): Promise<unknown> {
-    const res = await fetch(
-      `${GEMINI_BASE}/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system }] },
-          contents: [{ role: 'user', parts }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            responseSchema,
-            maxOutputTokens: this.maxOutputTokens,
-          },
-        }),
-      },
-    );
+    let res: Response;
+    try {
+      res = await fetch(
+        `${GEMINI_BASE}/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ role: 'user', parts }],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              responseSchema,
+              maxOutputTokens: this.maxOutputTokens,
+            },
+          }),
+        },
+      );
+    } catch {
+      throw BadRequest('Não foi possível conectar à API do Gemini.');
+    }
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw BadRequest(`Falha ao chamar a API do Gemini (${res.status}). ${detail.slice(0, 200)}`);
+      rethrowLlmError({ status: res.status, message: detail }, 'Gemini');
     }
 
     const json = (await res.json()) as {

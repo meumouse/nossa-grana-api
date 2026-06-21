@@ -19,6 +19,12 @@ const updateSchema = z.object({
 
 const providerEnum = z.enum(['openai', 'anthropic', 'google']);
 
+// IDs de modelo só têm letras, dígitos e `. - _ : /` (ex.: gpt-4o,
+// claude-opus-4-8, gemini-2.5-flash, ft:gpt-4o:org::id). Rejeita lixo como
+// e-mail colado por engano no campo (o `@` não casa), que faria a API do
+// provider responder "invalid model ID" e derrubaria a importação.
+const MODEL_ID_RE = /^[a-zA-Z0-9._:/-]+$/;
+
 const settingsSchema = z.object({
   baseCurrency: z.string().length(3).optional(),
   monthStartDay: z.number().int().min(1).max(28).optional(),
@@ -92,7 +98,15 @@ export default async function workspaceScopedRoutes(app: FastifyInstance): Promi
     const data: Record<string, unknown> = { ...rest };
     // Provider/modelo: string vazia → null (volta ao default de env).
     if (llmProvider !== undefined) data.llmProvider = llmProvider || null;
-    if (llmModel !== undefined) data.llmModel = llmModel.trim() || null;
+    if (llmModel !== undefined) {
+      const model = llmModel.trim();
+      if (model && !MODEL_ID_RE.test(model)) {
+        throw BadRequest(
+          'Modelo de LLM inválido — informe o ID do modelo (ex.: gpt-4o), sem espaços nem "@".',
+        );
+      }
+      data.llmModel = model || null;
+    }
     // Chave: vazia limpa; preenchida cifra antes de gravar. Ausente = não mexe.
     if (llmApiKey !== undefined) {
       data.llmApiKey = llmApiKey.trim() ? encryptSecret(llmApiKey.trim()) : null;
