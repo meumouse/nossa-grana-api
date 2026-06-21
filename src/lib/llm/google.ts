@@ -1,6 +1,6 @@
 import { BadRequest } from '../errors';
 import { rethrowLlmError } from './llm-error';
-import { coerceAnalysis, coerceCategories, coerceExtraction } from './parse';
+import { coerceAnalysis, coerceCategories, coerceExtraction, coerceRecurringDetect } from './parse';
 import type { DocumentExtractor } from './provider';
 import type {
   AnalyzeInput,
@@ -9,8 +9,15 @@ import type {
   ExtractDocumentInput,
   ExtractionResult,
   LlmConfig,
+  RecurringDetectInput,
+  RecurringDetectResult,
 } from './types';
-import { buildAnalysisPrompt, buildCategorizePrompt, buildExtractionPrompt } from './schema';
+import {
+  buildAnalysisPrompt,
+  buildCategorizePrompt,
+  buildExtractionPrompt,
+  buildRecurringDetectPrompt,
+} from './schema';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -71,6 +78,27 @@ const geminiAnalysisSchema = {
     },
   },
   required: ['findings'],
+};
+
+const geminiRecurringSchema = {
+  type: 'OBJECT',
+  properties: {
+    refinements: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          id: { type: 'INTEGER' },
+          isRecurring: { type: 'BOOLEAN' },
+          label: { type: 'STRING', nullable: true },
+          suggestedCategory: { type: 'STRING', nullable: true },
+          confidence: { type: 'NUMBER', nullable: true },
+        },
+        required: ['id', 'isRecurring'],
+      },
+    },
+  },
+  required: ['refinements'],
 };
 
 interface GeminiPart {
@@ -178,5 +206,16 @@ export class GoogleExtractor implements DocumentExtractor {
       geminiAnalysisSchema,
     );
     return coerceAnalysis(parsed, input.transactions.length - 1);
+  }
+
+  async detectRecurring(input: RecurringDetectInput): Promise<RecurringDetectResult> {
+    if (input.candidates.length === 0) return { refinements: [] };
+
+    const parsed = await this.generate(
+      buildRecurringDetectPrompt(input.categoryNames),
+      [{ text: JSON.stringify(input.candidates) }],
+      geminiRecurringSchema,
+    );
+    return coerceRecurringDetect(parsed, new Set(input.candidates.map((c) => c.id)));
   }
 }

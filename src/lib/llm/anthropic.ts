@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BadRequest } from '../errors';
 import { rethrowLlmError } from './llm-error';
-import { coerceAnalysis, coerceCategories, coerceExtraction } from './parse';
+import { coerceAnalysis, coerceCategories, coerceExtraction, coerceRecurringDetect } from './parse';
 import type { DocumentExtractor } from './provider';
 import type {
   AnalyzeInput,
@@ -10,14 +10,18 @@ import type {
   ExtractDocumentInput,
   ExtractionResult,
   LlmConfig,
+  RecurringDetectInput,
+  RecurringDetectResult,
 } from './types';
 import {
   analysisJsonSchema,
   buildAnalysisPrompt,
   buildCategorizePrompt,
   buildExtractionPrompt,
+  buildRecurringDetectPrompt,
   categorizeJsonSchema,
   extractionJsonSchema,
+  recurringDetectJsonSchema,
 } from './schema';
 
 /** Media types de imagem aceitos pela API de visão da Anthropic. */
@@ -129,5 +133,17 @@ export class AnthropicExtractor implements DocumentExtractor {
       [{ type: 'text', text: JSON.stringify(input.transactions) }],
     );
     return coerceAnalysis(parsed, maxIndex);
+  }
+
+  async detectRecurring(input: RecurringDetectInput): Promise<RecurringDetectResult> {
+    if (input.candidates.length === 0) return { refinements: [] };
+
+    const parsed = await this.runTool(
+      'recurring',
+      recurringDetectJsonSchema as unknown as InputSchema,
+      buildRecurringDetectPrompt(input.categoryNames),
+      [{ type: 'text', text: JSON.stringify(input.candidates) }],
+    );
+    return coerceRecurringDetect(parsed, new Set(input.candidates.map((c) => c.id)));
   }
 }

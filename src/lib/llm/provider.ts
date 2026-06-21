@@ -4,6 +4,8 @@ import type {
   CategorizeInput,
   ExtractDocumentInput,
   ExtractionResult,
+  RecurringDetectInput,
+  RecurringDetectResult,
 } from './types';
 
 /**
@@ -29,4 +31,11 @@ export interface DocumentExtractor {
    * (duplicatas, categorias suspeitas, valores atípicos). Não relê documentos.
    */
   analyzeTransactions(input: AnalyzeInput): Promise<AnalysisResult>;
+
+  /**
+   * Refina candidatos a recorrência já agrupados pelo backend: confirma quais
+   * são recorrências reais, sugere nome amigável/categoria e confiança. Devolve
+   * um refino por candidato (casado por `id`).
+   */
+  detectRecurring(input: RecurringDetectInput): Promise<RecurringDetectResult>;
 }

@@ -23,6 +23,11 @@ export type {
   LlmConfig,
   LlmModelInfo,
   LlmProvider,
+  RecurrenceFreq,
+  RecurringCandidate,
+  RecurringDetectInput,
+  RecurringDetectResult,
+  RecurringRefinement,
 } from './types';
 export { LLM_PROVIDERS, PROVIDER_LIST, isLlmProvider } from './providers';
 export { listProviderModels } from './models';

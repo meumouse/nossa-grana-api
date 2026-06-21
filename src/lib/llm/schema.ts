@@ -104,6 +104,66 @@ export const analysisJsonSchema = {
   required: ['findings'],
 } as const;
 
+/** Schema da resposta de refino de recorrências (strict). */
+export const recurringDetectJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    refinements: {
+      type: 'array',
+      description: 'Um refino por candidato recebido, casado pelo campo "id".',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'integer', description: 'O "id" do candidato correspondente.' },
+          isRecurring: {
+            type: 'boolean',
+            description: 'true se for uma recorrência real (assinatura, conta fixa, salário...).',
+          },
+          label: {
+            type: ['string', 'null'],
+            description: 'Nome amigável e curto (ex.: "Netflix", "Aluguel"). null mantém o original.',
+          },
+          suggestedCategory: {
+            type: ['string', 'null'],
+            description: 'Categoria sugerida (preferir uma das fornecidas). null se incerto.',
+          },
+          confidence: {
+            type: ['number', 'null'],
+            description: 'Confiança 0..1 de que é recorrência.',
+          },
+        },
+        required: ['id', 'isRecurring', 'label', 'suggestedCategory', 'confidence'],
+      },
+    },
+  },
+  required: ['refinements'],
+} as const;
+
+/** Instruções p/ refinar candidatos a recorrência (não inventa séries novas). */
+export function buildRecurringDetectPrompt(categoryNames?: string[]): string {
+  return [
+    'Você revisa séries de transações financeiras brasileiras que se repetem em intervalos regulares,',
+    'candidatas a virar uma RECORRÊNCIA cadastrada (assinaturas, mensalidades, aluguel, salário, contas fixas).',
+    'Receberá um array JSON de candidatos, cada um com: id, description, type (INCOME/EXPENSE), amount,',
+    'frequency (DAILY/WEEKLY/MONTHLY/YEARLY), interval, occurrences e dates (datas das ocorrências).',
+    '',
+    'Para CADA candidato, responda em "refinements" (um item por id recebido):',
+    '- isRecurring: true se de fato parecer um compromisso recorrente; false p/ compras avulsas que',
+    '  apenas coincidiram em valor/data (ex.: mercado, restaurantes, transferências variadas).',
+    '- label: um nome curto e amigável p/ a recorrência (ex.: "Netflix"); null p/ manter a descrição original.',
+    '- suggestedCategory e confidence (0..1).',
+    '',
+    'Regras: NÃO crie ids que não foram enviados. Seja conservador no isRecurring — na dúvida, false.',
+    categoryNames && categoryNames.length
+      ? `Categorias existentes do usuário: ${categoryNames.join(', ')}.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function checksHint(checks: ConsistencyKind[]): string {
   const labels: Record<ConsistencyKind, string> = {
     DUPLICATE:

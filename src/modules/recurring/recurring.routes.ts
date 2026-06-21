@@ -2,8 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { NotFound } from '../../lib/errors';
 import { requireRole } from '../../plugins/workspace';
-import { materializeOne } from './recurring.service';
-import { addMonths, startOfDayUTC } from '../../lib/dates';
+import { createRecurring } from './recurring.service';
+import { suggestRecurring } from './recurring.detect';
+import { startOfDayUTC } from '../../lib/dates';
 
 const baseSchema = z.object({
   clientId: z.string().uuid().optional(),
@@ -20,6 +21,12 @@ const baseSchema = z.object({
   autoConfirm: z.boolean().optional(),
 });
 
+// Criação aceita também ids de transações já existentes da série, p/ vincular
+// (em vez de recriar) e evitar duplicidade — ver createRecurring.
+const createSchema = baseSchema.extend({
+  linkTransactionIds: z.array(z.string().min(1)).max(500).optional(),
+});
+
 export default async function recurringRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', async (request) => {
     const items = await app.prisma.recurringTransaction.findMany({
@@ -30,19 +37,16 @@ export default async function recurringRoutes(app: FastifyInstance): Promise<voi
     return { items };
   });
 
+  // Sugestões de recorrência detectadas no extrato (séries regulares ainda sem
+  // recorrência cadastrada). Híbrido: agrupamento determinístico + refino por IA.
+  app.get('/suggestions', async (request) => {
+    const suggestions = await suggestRecurring(app.prisma, request.workspace!.id);
+    return { suggestions };
+  });
+
   app.post('/', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
-    const body = baseSchema.parse(request.body);
-    const rec = await app.prisma.recurringTransaction.create({
-      data: { ...body, workspaceId: request.workspace!.id },
-    });
-
-    // Já materializa as próximas ocorrências p/ aparecerem na previsão.
-    const settings = await app.prisma.workspaceSettings.findUnique({
-      where: { workspaceId: request.workspace!.id },
-    });
-    const until = addMonths(startOfDayUTC(new Date()), settings?.forecastHorizon ?? 12);
-    await materializeOne(app.prisma, rec.id, until);
-
+    const body = createSchema.parse(request.body);
+    const rec = await createRecurring(app.prisma, request.workspace!.id, body);
     return reply.code(201).send({ recurring: rec });
   });
 

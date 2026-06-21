@@ -6,6 +6,8 @@ import type {
   ConsistencySeverity,
   ExtractedType,
   ExtractionResult,
+  RecurringDetectResult,
+  RecurringRefinement,
 } from './types';
 
 /**
@@ -92,6 +94,37 @@ export function coerceAnalysis(parsed: unknown, maxIndex: number): AnalysisResul
     .filter((f): f is ConsistencyFinding => f !== null);
 
   return { findings };
+}
+
+/**
+ * Normaliza o refino de recorrências: mantém só ids válidos (enviados ao modelo)
+ * e clampeia os campos. `validIds` é o conjunto de ids que foram solicitados.
+ */
+export function coerceRecurringDetect(parsed: unknown, validIds: Set<number>): RecurringDetectResult {
+  const obj = (parsed ?? {}) as Record<string, unknown>;
+  const raw = Array.isArray(obj.refinements) ? obj.refinements : [];
+  const seen = new Set<number>();
+  const refinements = raw
+    .map((r): RecurringRefinement | null => {
+      const o = (r ?? {}) as Record<string, unknown>;
+      const id = Math.trunc(Number(o.id));
+      if (!Number.isInteger(id) || !validIds.has(id) || seen.has(id)) return null;
+      seen.add(id);
+      const confidence = typeof o.confidence === 'number' ? Math.min(Math.max(o.confidence, 0), 1) : null;
+      return {
+        id,
+        isRecurring: o.isRecurring !== false, // default true; só descarta se vier explicitamente false
+        label: typeof o.label === 'string' && o.label.trim() ? o.label.trim().slice(0, 200) : null,
+        suggestedCategory:
+          typeof o.suggestedCategory === 'string' && o.suggestedCategory.trim()
+            ? o.suggestedCategory.trim().slice(0, 100)
+            : null,
+        confidence,
+      };
+    })
+    .filter((r): r is RecurringRefinement => r !== null);
+
+  return { refinements };
 }
 
 const INSTALLMENT_RE = /\(?\b(\d{1,3})\s*\/\s*(\d{1,3})\b\)?/g;

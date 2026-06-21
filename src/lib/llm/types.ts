@@ -89,6 +89,52 @@ export interface AnalyzeInput {
   categoryNames?: string[];
 }
 
+// ---- Detecção de recorrências ----
+
+/** Frequência de recorrência (espelha o enum do Prisma, sem acoplar a ele). */
+export type RecurrenceFreq = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY';
+
+/**
+ * Uma série candidata a recorrência, já agrupada deterministicamente no backend
+ * (mesma descrição/valor em cadência regular). A IA só refina/confirma.
+ */
+export interface RecurringCandidate {
+  /** Índice estável p/ casar a resposta da IA com o candidato. */
+  id: number;
+  description: string;
+  type: ExtractedType;
+  /** Valor típico (mediana) da série. */
+  amount: number;
+  frequency: RecurrenceFreq;
+  interval: number;
+  /** Quantas vezes a série apareceu no extrato. */
+  occurrences: number;
+  /** Datas ISO (yyyy-mm-dd) das ocorrências, p/ contexto da IA. */
+  dates: string[];
+}
+
+export interface RecurringDetectInput {
+  candidates: RecurringCandidate[];
+  categoryNames?: string[];
+}
+
+/** Refino da IA p/ um candidato (casado por `id`). */
+export interface RecurringRefinement {
+  id: number;
+  /** false = a IA julga que NÃO é uma recorrência real (descartar). */
+  isRecurring: boolean;
+  /** Nome amigável sugerido (ex.: "Netflix"). null mantém o original. */
+  label?: string | null;
+  /** Categoria sugerida (preferir uma existente). null se incerto. */
+  suggestedCategory?: string | null;
+  /** Confiança 0..1 de que é recorrência. */
+  confidence?: number | null;
+}
+
+export interface RecurringDetectResult {
+  refinements: RecurringRefinement[];
+}
+
 /** Um achado da análise. `transactionIndices` referencia AnalyzeTransaction.index. */
 export interface ConsistencyFinding {
   kind: ConsistencyKind;

@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionContentPart } from 'openai/resources/chat/completions';
 import { BadRequest } from '../errors';
 import { rethrowLlmError } from './llm-error';
-import { coerceAnalysis, coerceCategories, coerceExtraction } from './parse';
+import { coerceAnalysis, coerceCategories, coerceExtraction, coerceRecurringDetect } from './parse';
 import type { DocumentExtractor } from './provider';
 import type {
   AnalyzeInput,
@@ -11,14 +11,18 @@ import type {
   ExtractDocumentInput,
   ExtractionResult,
   LlmConfig,
+  RecurringDetectInput,
+  RecurringDetectResult,
 } from './types';
 import {
   analysisJsonSchema,
   buildAnalysisPrompt,
   buildCategorizePrompt,
   buildExtractionPrompt,
+  buildRecurringDetectPrompt,
   categorizeJsonSchema,
   extractionJsonSchema,
+  recurringDetectJsonSchema,
 } from './schema';
 
 function dataUrl(mimeType: string, data: Buffer): string {
@@ -143,5 +147,32 @@ export class OpenAIExtractor implements DocumentExtractor {
     const content = completion.choices[0]?.message?.content;
     if (!content) return { findings: [] };
     return coerceAnalysis(JSON.parse(content), input.transactions.length - 1);
+  }
+
+  async detectRecurring(input: RecurringDetectInput): Promise<RecurringDetectResult> {
+    if (input.candidates.length === 0) return { refinements: [] };
+
+    const completion = await this.client.chat.completions
+      .create({
+        model: this.model,
+        max_completion_tokens: this.maxOutputTokens,
+        messages: [
+          { role: 'system', content: buildRecurringDetectPrompt(input.categoryNames) },
+          { role: 'user', content: JSON.stringify(input.candidates) },
+        ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'recurring',
+            strict: true,
+            schema: recurringDetectJsonSchema as unknown as Record<string, unknown>,
+          },
+        },
+      })
+      .catch((err) => rethrowLlmError(err, 'OpenAI'));
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) return { refinements: [] };
+    return coerceRecurringDetect(JSON.parse(content), new Set(input.candidates.map((c) => c.id)));
   }
 }
