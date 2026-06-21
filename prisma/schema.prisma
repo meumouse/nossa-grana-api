@@ -177,6 +177,12 @@ model WorkspaceSettings {
   llmProvider       String? // ex.: "openai"
   llmModel          String? // ex.: "gpt-4o"
   llmApiKey         String? // ciphertext da chave do provider
+  // Cache da última busca de modelos do provider (JSON: [{ id, label }]). Fica
+  // salvo p/ o seletor de modelo continuar populado após recarregar a página,
+  // sem precisar rebuscar na API toda vez. Reescrito a cada "Buscar modelos".
+  llmModels          Json?
+  llmModelsProvider  String?   // provider a que a lista cacheada pertence
+  llmModelsFetchedAt DateTime? // quando a lista foi buscada pela última vez
 
   updatedAt DateTime @updatedAt
 }

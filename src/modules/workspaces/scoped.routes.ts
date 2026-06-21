@@ -146,6 +146,24 @@ export default async function workspaceScopedRoutes(app: FastifyInstance): Promi
     }
 
     const models = await listProviderModels(provider, apiKey);
-    return { provider, models };
+
+    // Persiste a lista p/ o seletor continuar populado após recarregar a página
+    // (sem rebuscar na API). Toca só nos campos de cache — não mexe no
+    // provider/modelo/chave já salvos. Guarda o provider da lista p/ não exibir
+    // modelos de um provider diferente do selecionado.
+    const fetchedAt = new Date();
+    const cached = models.map((m) => ({ id: m.id, label: m.label ?? null }));
+    await app.prisma.workspaceSettings.upsert({
+      where: { workspaceId: request.workspace!.id },
+      update: { llmModels: cached, llmModelsProvider: provider, llmModelsFetchedAt: fetchedAt },
+      create: {
+        workspaceId: request.workspace!.id,
+        llmModels: cached,
+        llmModelsProvider: provider,
+        llmModelsFetchedAt: fetchedAt,
+      },
+    });
+
+    return { provider, models, fetchedAt: fetchedAt.toISOString() };
   });
 }
