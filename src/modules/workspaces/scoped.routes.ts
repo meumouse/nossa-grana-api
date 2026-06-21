@@ -31,6 +31,8 @@ const settingsSchema = z.object({
   forecastHorizon: z.number().int().min(1).max(36).optional(),
   variableLookback: z.number().int().min(1).max(12).optional(),
   weekStartsOnMonday: z.boolean().optional(),
+  // Pessoas cadastradas p/ rateio de transações compartilhadas (nomes).
+  sharedContacts: z.array(z.string().min(1).max(80)).max(100).optional(),
   // Importação por IA. String vazia limpa o campo (volta ao default de env).
   llmProvider: providerEnum.optional(),
   llmModel: z.string().max(80).optional(),

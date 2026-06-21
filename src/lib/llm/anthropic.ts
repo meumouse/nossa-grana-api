@@ -1,10 +1,19 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BadRequest } from '../errors';
 import { rethrowLlmError } from './llm-error';
-import { coerceCategories, coerceExtraction } from './parse';
+import { coerceAnalysis, coerceCategories, coerceExtraction } from './parse';
 import type { DocumentExtractor } from './provider';
-import type { CategorizeInput, ExtractDocumentInput, ExtractionResult, LlmConfig } from './types';
+import type {
+  AnalyzeInput,
+  AnalysisResult,
+  CategorizeInput,
+  ExtractDocumentInput,
+  ExtractionResult,
+  LlmConfig,
+} from './types';
 import {
+  analysisJsonSchema,
+  buildAnalysisPrompt,
   buildCategorizePrompt,
   buildExtractionPrompt,
   categorizeJsonSchema,
@@ -107,5 +116,18 @@ export class AnthropicExtractor implements DocumentExtractor {
       ],
     );
     return coerceCategories(input.rows.length, parsed);
+  }
+
+  async analyzeTransactions(input: AnalyzeInput): Promise<AnalysisResult> {
+    if (input.transactions.length === 0 || input.checks.length === 0) return { findings: [] };
+
+    const maxIndex = input.transactions.length - 1;
+    const parsed = await this.runTool(
+      'analysis',
+      analysisJsonSchema as unknown as InputSchema,
+      buildAnalysisPrompt(input.checks, input.categoryNames),
+      [{ type: 'text', text: JSON.stringify(input.transactions) }],
+    );
+    return coerceAnalysis(parsed, maxIndex);
   }
 }

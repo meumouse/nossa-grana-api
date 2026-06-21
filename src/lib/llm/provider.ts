@@ -1,4 +1,10 @@
-import type { CategorizeInput, ExtractDocumentInput, ExtractionResult } from './types';
+import type {
+  AnalyzeInput,
+  AnalysisResult,
+  CategorizeInput,
+  ExtractDocumentInput,
+  ExtractionResult,
+} from './types';
 
 /**
  * Contrato de um provider de extração por LLM. Trocar de provider/modelo =
@@ -17,4 +23,10 @@ export interface DocumentExtractor {
    * alinhado por índice com `input.rows` (null = sem sugestão).
    */
   categorizeRows(input: CategorizeInput): Promise<(string | null)[]>;
+
+  /**
+   * Analisa um extrato (transações já estruturadas) em busca de inconsistências
+   * (duplicatas, categorias suspeitas, valores atípicos). Não relê documentos.
+   */
+  analyzeTransactions(input: AnalyzeInput): Promise<AnalysisResult>;
 }

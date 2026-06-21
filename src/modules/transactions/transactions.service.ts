@@ -4,7 +4,9 @@ import { BadRequest, NotFound } from '../../lib/errors';
 import { logActivity } from '../../lib/activity';
 import { randomUUID } from '../../lib/tokens';
 import { getOrCreateOpenInvoice } from '../invoices/invoices.service';
+import { getExtractor, resolveLlmConfig } from '../../lib/llm';
 import type {
+  analyzeSchema,
   createTxSchema,
   transferSchema,
   updateTxSchema,
@@ -15,6 +17,7 @@ type CreateInput = z.infer<typeof createTxSchema>;
 type UpdateInput = z.infer<typeof updateTxSchema>;
 type TransferInput = z.infer<typeof transferSchema>;
 type ListInput = z.infer<typeof listQuerySchema>;
+type AnalyzeInput = z.infer<typeof analyzeSchema>;
 
 const txInclude = {
   category: { select: { id: true, name: true, kind: true, nature: true, color: true, icon: true } },
@@ -69,6 +72,35 @@ export async function listTransactions(db: PrismaClient, workspaceId: string, q:
   const hasMore = items.length > q.limit;
   const page = hasMore ? items.slice(0, q.limit) : items;
   return { items: page, nextCursor: hasMore ? page[page.length - 1]?.id ?? null : null };
+}
+
+/**
+ * Verificação de inconsistências do extrato com IA. Recebe as transações do
+ * cliente (offline-first: inclui lançamentos ainda não sincronizados) e devolve
+ * os achados da IA. Stateless — não grava nada; o cliente decide o que fazer.
+ */
+export async function analyzeStatement(
+  db: PrismaClient,
+  workspaceId: string,
+  input: AnalyzeInput,
+) {
+  const settings = await db.workspaceSettings.findUnique({
+    where: { workspaceId },
+    select: { llmProvider: true, llmModel: true, llmApiKey: true },
+  });
+  const extractor = getExtractor(resolveLlmConfig(settings));
+
+  const categories = await db.category.findMany({
+    where: { workspaceId, deletedAt: null, archived: false },
+    select: { name: true },
+  });
+
+  const result = await extractor.analyzeTransactions({
+    transactions: input.transactions,
+    checks: input.checks,
+    categoryNames: categories.map((c) => c.name),
+  });
+  return result;
 }
 
 export async function createTransaction(

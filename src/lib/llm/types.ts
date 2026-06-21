@@ -64,3 +64,41 @@ export interface CategorizeInput {
   rows: { description: string; type: ExtractedType }[];
   categoryNames: string[];
 }
+
+// ---- Verificação de inconsistências do extrato ----
+
+/** Tipos de checagem que a IA pode rodar sobre o extrato. */
+export type ConsistencyKind = 'DUPLICATE' | 'CATEGORY' | 'AMOUNT';
+
+export type ConsistencySeverity = 'high' | 'medium' | 'low';
+
+/** Uma transação enviada para análise (referenciada pelo `index` na resposta). */
+export interface AnalyzeTransaction {
+  index: number;
+  date: string;
+  description: string;
+  amount: number;
+  type: ExtractedType;
+  category?: string | null;
+}
+
+export interface AnalyzeInput {
+  transactions: AnalyzeTransaction[];
+  /** Checagens habilitadas pelo usuário. */
+  checks: ConsistencyKind[];
+  categoryNames?: string[];
+}
+
+/** Um achado da análise. `transactionIndices` referencia AnalyzeTransaction.index. */
+export interface ConsistencyFinding {
+  kind: ConsistencyKind;
+  severity: ConsistencySeverity;
+  title: string;
+  detail: string;
+  suggestion?: string | null;
+  transactionIndices: number[];
+}
+
+export interface AnalysisResult {
+  findings: ConsistencyFinding[];
+}

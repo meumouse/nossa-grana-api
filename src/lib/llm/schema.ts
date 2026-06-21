@@ -3,6 +3,7 @@
  * Ficam separados do provider p/ poderem ser reaproveitados por outras
  * implementações (Claude, Gemini...) sem reescrever as instruções.
  */
+import type { ConsistencyKind } from './types';
 
 /** Schema da resposta de extração de documento (strict — todo campo é required). */
 export const extractionJsonSchema = {
@@ -61,6 +62,80 @@ export const categorizeJsonSchema = {
   },
   required: ['categories'],
 } as const;
+
+/** Schema da resposta de análise de inconsistências (strict). */
+export const analysisJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    findings: {
+      type: 'array',
+      description: 'Uma entrada por inconsistência encontrada. Vazio se nada suspeito.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: 'string',
+            enum: ['DUPLICATE', 'CATEGORY', 'AMOUNT'],
+            description: 'DUPLICATE = possível duplicata; CATEGORY = categoria suspeita; AMOUNT = valor atípico/erro.',
+          },
+          severity: {
+            type: 'string',
+            enum: ['high', 'medium', 'low'],
+            description: 'Gravidade/confiança do achado.',
+          },
+          title: { type: 'string', description: 'Resumo curto do problema.' },
+          detail: { type: 'string', description: 'Explicação objetiva do porquê é suspeito.' },
+          suggestion: {
+            type: ['string', 'null'],
+            description: 'Ação sugerida (ex.: "remover a duplicata", "recategorizar"). null se não houver.',
+          },
+          transactionIndices: {
+            type: 'array',
+            description: 'Índices (campo "index" da entrada) das transações envolvidas.',
+            items: { type: 'integer' },
+          },
+        },
+        required: ['kind', 'severity', 'title', 'detail', 'suggestion', 'transactionIndices'],
+      },
+    },
+  },
+  required: ['findings'],
+} as const;
+
+function checksHint(checks: ConsistencyKind[]): string {
+  const labels: Record<ConsistencyKind, string> = {
+    DUPLICATE:
+      'DUPLICATE: lançamentos que parecem a mesma transação repetida (mesmo valor e data próximos, ou descrições equivalentes). NÃO sinalize parcelas, assinaturas mensais ou compras legítimas repetidas como duplicata.',
+    CATEGORY:
+      'CATEGORY: transações cuja categoria parece incoerente com a descrição (ex.: "Uber" categorizado como Alimentação).',
+    AMOUNT:
+      'AMOUNT: valores destoantes/atípicos para o estabelecimento, possíveis erros de digitação (casa decimal trocada) ou cobranças que parecem indevidas.',
+  };
+  return checks.map((c) => `- ${labels[c]}`).join('\n');
+}
+
+/** Instruções p/ analisar o extrato em busca de inconsistências. */
+export function buildAnalysisPrompt(checks: ConsistencyKind[], categoryNames?: string[]): string {
+  return [
+    'Você é um auditor financeiro que revisa um extrato de transações em português do Brasil.',
+    'Receberá um array JSON de transações, cada uma com: index, date (yyyy-mm-dd), description, amount (positivo), type (INCOME/EXPENSE) e category.',
+    'Procure SOMENTE pelos tipos de inconsistência abaixo:',
+    checksHint(checks),
+    '',
+    'Regras:',
+    '- Use o campo "index" de cada transação para referenciá-la em "transactionIndices".',
+    '- Para duplicatas, inclua TODAS as transações do grupo suspeito em "transactionIndices".',
+    '- Seja conservador: só reporte quando houver evidência clara. É melhor não reportar do que gerar falso alarme.',
+    '- Mensagens curtas, diretas e em português. Não invente transações que não estão na lista.',
+    categoryNames && categoryNames.length
+      ? `- Categorias existentes do usuário: ${categoryNames.join(', ')}.`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
 function categoryHint(categoryNames?: string[]): string {
   if (!categoryNames || categoryNames.length === 0) {

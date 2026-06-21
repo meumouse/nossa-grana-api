@@ -2,15 +2,19 @@ import OpenAI from 'openai';
 import type { ChatCompletionContentPart } from 'openai/resources/chat/completions';
 import { BadRequest } from '../errors';
 import { rethrowLlmError } from './llm-error';
-import { coerceCategories, coerceExtraction } from './parse';
+import { coerceAnalysis, coerceCategories, coerceExtraction } from './parse';
 import type { DocumentExtractor } from './provider';
 import type {
+  AnalyzeInput,
+  AnalysisResult,
   CategorizeInput,
   ExtractDocumentInput,
   ExtractionResult,
   LlmConfig,
 } from './types';
 import {
+  analysisJsonSchema,
+  buildAnalysisPrompt,
   buildCategorizePrompt,
   buildExtractionPrompt,
   categorizeJsonSchema,
@@ -112,5 +116,32 @@ export class OpenAIExtractor implements DocumentExtractor {
     if (!content) return input.rows.map(() => null);
 
     return coerceCategories(input.rows.length, JSON.parse(content));
+  }
+
+  async analyzeTransactions(input: AnalyzeInput): Promise<AnalysisResult> {
+    if (input.transactions.length === 0 || input.checks.length === 0) return { findings: [] };
+
+    const completion = await this.client.chat.completions
+      .create({
+        model: this.model,
+        max_completion_tokens: this.maxOutputTokens,
+        messages: [
+          { role: 'system', content: buildAnalysisPrompt(input.checks, input.categoryNames) },
+          { role: 'user', content: JSON.stringify(input.transactions) },
+        ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'analysis',
+            strict: true,
+            schema: analysisJsonSchema as unknown as Record<string, unknown>,
+          },
+        },
+      })
+      .catch((err) => rethrowLlmError(err, 'OpenAI'));
+
+    const content = completion.choices[0]?.message?.content;
+    if (!content) return { findings: [] };
+    return coerceAnalysis(JSON.parse(content), input.transactions.length - 1);
   }
 }

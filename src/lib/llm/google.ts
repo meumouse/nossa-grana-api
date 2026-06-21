@@ -1,9 +1,16 @@
 import { BadRequest } from '../errors';
 import { rethrowLlmError } from './llm-error';
-import { coerceCategories, coerceExtraction } from './parse';
+import { coerceAnalysis, coerceCategories, coerceExtraction } from './parse';
 import type { DocumentExtractor } from './provider';
-import type { CategorizeInput, ExtractDocumentInput, ExtractionResult, LlmConfig } from './types';
-import { buildCategorizePrompt, buildExtractionPrompt } from './schema';
+import type {
+  AnalyzeInput,
+  AnalysisResult,
+  CategorizeInput,
+  ExtractDocumentInput,
+  ExtractionResult,
+  LlmConfig,
+} from './types';
+import { buildAnalysisPrompt, buildCategorizePrompt, buildExtractionPrompt } from './schema';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -42,6 +49,28 @@ const geminiCategorizeSchema = {
     categories: { type: 'ARRAY', items: { type: 'STRING', nullable: true } },
   },
   required: ['categories'],
+};
+
+const geminiAnalysisSchema = {
+  type: 'OBJECT',
+  properties: {
+    findings: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          kind: { type: 'STRING', enum: ['DUPLICATE', 'CATEGORY', 'AMOUNT'] },
+          severity: { type: 'STRING', enum: ['high', 'medium', 'low'] },
+          title: { type: 'STRING' },
+          detail: { type: 'STRING' },
+          suggestion: { type: 'STRING', nullable: true },
+          transactionIndices: { type: 'ARRAY', items: { type: 'INTEGER' } },
+        },
+        required: ['kind', 'severity', 'title', 'detail', 'transactionIndices'],
+      },
+    },
+  },
+  required: ['findings'],
 };
 
 interface GeminiPart {
@@ -138,5 +167,16 @@ export class GoogleExtractor implements DocumentExtractor {
       geminiCategorizeSchema,
     );
     return coerceCategories(input.rows.length, parsed);
+  }
+
+  async analyzeTransactions(input: AnalyzeInput): Promise<AnalysisResult> {
+    if (input.transactions.length === 0 || input.checks.length === 0) return { findings: [] };
+
+    const parsed = await this.generate(
+      buildAnalysisPrompt(input.checks, input.categoryNames),
+      [{ text: JSON.stringify(input.transactions) }],
+      geminiAnalysisSchema,
+    );
+    return coerceAnalysis(parsed, input.transactions.length - 1);
   }
 }

@@ -37,6 +37,26 @@ export const paySchema = z.object({
   paidAt: z.coerce.date().optional(),
 });
 
+export const analyzeSchema = z.object({
+  checks: z
+    .array(z.enum(['DUPLICATE', 'CATEGORY', 'AMOUNT']))
+    .min(1)
+    .default(['DUPLICATE', 'CATEGORY', 'AMOUNT']),
+  transactions: z
+    .array(
+      z.object({
+        index: z.number().int().min(0),
+        date: z.string().min(1),
+        description: z.string().min(1).max(200),
+        amount: z.coerce.number(),
+        type: z.enum(['INCOME', 'EXPENSE']),
+        category: z.string().nullable().optional(),
+      }),
+    )
+    .min(1)
+    .max(500),
+});
+
 export const listQuerySchema = z.object({
   accountId: z.string().optional(),
   categoryId: z.string().optional(),

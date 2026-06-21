@@ -171,6 +171,11 @@ model WorkspaceSettings {
   variableLookback  Int     @default(3)
   weekStartsOnMonday Boolean @default(true)
 
+  // Pessoas cadastradas p/ rateio de transações compartilhadas (autocomplete no
+  // modal de dividir). JSON: array de nomes (string[]). O dono do perfil não
+  // precisa ser cadastrado aqui — ele entra automaticamente no rateio.
+  sharedContacts Json?
+
   // --- Importação por IA (sobrescreve os defaults de env por workspace) ---
   // null em qualquer campo = usa o valor do env. A chave é guardada cifrada
   // (AES-256-GCM) e NUNCA é devolvida ao cliente — só um booleano "set".
@@ -473,6 +478,19 @@ model Transaction {
   // --- FATURA DE CARTÃO ---
   creditCardInvoiceId String?
   creditCardInvoice   CreditCardInvoice? @relation(fields: [creditCardInvoiceId], references: [id], onDelete: SetNull)
+
+  // --- DUPLICIDADE ---
+  // true = o usuário revisou um alerta de possível duplicata e confirmou que
+  // NÃO é duplicada (lançamento legítimo) — silencia o alerta para o grupo.
+  duplicateDismissed Boolean @default(false)
+
+  // --- COMPARTILHAMENTO / DIVISÃO ---
+  // shared = a conta foi dividida com outras pessoas; shareCount = total de
+  // pessoas no rateio (inclui o dono). shares guarda os participantes e o
+  // status de pagamento: [{ name, paid, owner }]. O dono entra como pago.
+  shared     Boolean @default(false)
+  shareCount Int?
+  shares     Json?
 
   tags        Tag[]        @relation("TransactionTags")
   attachments Attachment[]

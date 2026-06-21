@@ -9,7 +9,13 @@ import type { LlmConfig, LlmProvider } from './types';
 
 export type { DocumentExtractor } from './provider';
 export type {
+  AnalyzeInput,
+  AnalyzeTransaction,
+  AnalysisResult,
   CategorizeInput,
+  ConsistencyFinding,
+  ConsistencyKind,
+  ConsistencySeverity,
   ExtractDocumentInput,
   ExtractedTransaction,
   ExtractedType,

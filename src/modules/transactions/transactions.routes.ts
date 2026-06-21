@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireRole } from '../../plugins/workspace';
 import {
+  analyzeStatement,
   createTransaction,
   createTransfer,
   deleteTransaction,
@@ -10,6 +11,7 @@ import {
   updateTransaction,
 } from './transactions.service';
 import {
+  analyzeSchema,
   createTxSchema,
   listQuerySchema,
   paySchema,
@@ -64,6 +66,13 @@ export default async function transactionsRoutes(app: FastifyInstance): Promise<
       body,
     );
     return reply.code(201).send({ transaction: tx });
+  });
+
+  // Verificação de inconsistências com IA. O cliente envia o extrato (inclui
+  // lançamentos offline); o servidor só roda a IA e devolve os achados.
+  app.post('/analyze', { preHandler: [requireRole('MEMBER')] }, async (request) => {
+    const body = analyzeSchema.parse(request.body);
+    return analyzeStatement(app.prisma, request.workspace!.id, body);
   });
 
   app.post('/transfer', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {

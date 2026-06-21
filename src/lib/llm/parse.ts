@@ -1,4 +1,11 @@
-import type { ExtractedType, ExtractionResult } from './types';
+import type {
+  AnalysisResult,
+  ConsistencyFinding,
+  ConsistencyKind,
+  ConsistencySeverity,
+  ExtractedType,
+  ExtractionResult,
+} from './types';
 
 /**
  * Parsing defensivo das respostas do LLM, compartilhado pelos providers. Os
@@ -42,4 +49,46 @@ export function coerceCategories(rowCount: number, parsed: unknown): (string | n
   const obj = (parsed ?? {}) as Record<string, unknown>;
   const cats = Array.isArray(obj.categories) ? obj.categories : [];
   return Array.from({ length: rowCount }, (_, i) => (typeof cats[i] === 'string' ? (cats[i] as string) : null));
+}
+
+const KINDS: ConsistencyKind[] = ['DUPLICATE', 'CATEGORY', 'AMOUNT'];
+const SEVERITIES: ConsistencySeverity[] = ['high', 'medium', 'low'];
+
+/**
+ * Normaliza a resposta de análise de inconsistências: descarta achados sem tipo
+ * válido ou sem transações referenciadas, e clampeia os campos. `maxIndex` é o
+ * maior índice válido — referências fora da faixa são removidas.
+ */
+export function coerceAnalysis(parsed: unknown, maxIndex: number): AnalysisResult {
+  const obj = (parsed ?? {}) as Record<string, unknown>;
+  const raw = Array.isArray(obj.findings) ? obj.findings : [];
+  const findings = raw
+    .map((f): ConsistencyFinding | null => {
+      const r = (f ?? {}) as Record<string, unknown>;
+      const kind = KINDS.includes(r.kind as ConsistencyKind) ? (r.kind as ConsistencyKind) : null;
+      if (!kind) return null;
+      const indices = Array.isArray(r.transactionIndices)
+        ? Array.from(
+            new Set(
+              r.transactionIndices
+                .map((n) => Math.trunc(Number(n)))
+                .filter((n) => Number.isInteger(n) && n >= 0 && n <= maxIndex),
+            ),
+          )
+        : [];
+      if (indices.length === 0) return null;
+      return {
+        kind,
+        severity: SEVERITIES.includes(r.severity as ConsistencySeverity)
+          ? (r.severity as ConsistencySeverity)
+          : 'medium',
+        title: typeof r.title === 'string' ? r.title.trim().slice(0, 200) : 'Inconsistência',
+        detail: typeof r.detail === 'string' ? r.detail.trim().slice(0, 500) : '',
+        suggestion: typeof r.suggestion === 'string' ? r.suggestion.trim().slice(0, 300) : null,
+        transactionIndices: indices,
+      };
+    })
+    .filter((f): f is ConsistencyFinding => f !== null);
+
+  return { findings };
 }

@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import type {
   AccountChange,
   CategoryChange,
@@ -98,6 +98,11 @@ export async function push(
       date: c.data.date,
       dueDate: c.data.dueDate ?? null,
       paidAt: c.data.paidAt ?? null,
+      duplicateDismissed: c.data.duplicateDismissed ?? false,
+      shared: c.data.shared ?? false,
+      shareCount: c.data.shareCount ?? null,
+      // JSON do Prisma: null vira DbNull (limpa a coluna); array é gravado como tal.
+      shares: c.data.shares == null ? Prisma.DbNull : (c.data.shares as Prisma.InputJsonValue),
     };
     const rec = await db.transaction.upsert({
       where: { clientId: c.clientId },

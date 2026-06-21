@@ -32,6 +32,12 @@ const categoryData = z.object({
   archived: z.boolean().optional(),
 });
 
+export const txShareSchema = z.object({
+  name: z.string().min(1).max(80),
+  paid: z.boolean().default(false),
+  owner: z.boolean().optional(),
+});
+
 const transactionData = z.object({
   accountId: z.string().min(1),
   type: z.enum(['INCOME', 'EXPENSE', 'TRANSFER']),
@@ -44,6 +50,11 @@ const transactionData = z.object({
   date: z.coerce.date(),
   dueDate: z.coerce.date().nullable().optional(),
   paidAt: z.coerce.date().nullable().optional(),
+  // Duplicidade e compartilhamento (offline-first: viajam na própria transação).
+  duplicateDismissed: z.boolean().optional(),
+  shared: z.boolean().optional(),
+  shareCount: z.number().int().min(1).nullable().optional(),
+  shares: z.array(txShareSchema).nullable().optional(),
 });
 
 const change = <T extends z.ZodTypeAny>(data: T) =>
