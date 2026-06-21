@@ -252,6 +252,24 @@ export async function payTransaction(
 }
 
 /**
+ * Desfaz o pagamento: volta uma transação COMPLETED para PENDING (conta a
+ * pagar/receber) e limpa o paidAt — sai do saldo de novo.
+ */
+export async function unpayTransaction(db: PrismaClient, workspaceId: string, id: string) {
+  const existing = await db.transaction.findFirst({
+    where: { id, workspaceId, deletedAt: null },
+  });
+  if (!existing) throw NotFound('Transação não encontrada');
+  if (existing.status !== 'COMPLETED') throw BadRequest('Transação não está efetivada');
+
+  return db.transaction.update({
+    where: { id },
+    data: { status: 'PENDING', paidAt: null },
+    include: txInclude,
+  });
+}
+
+/**
  * Transferência entre contas: duas pernas TRANSFER ligadas por transferId.
  * A perna de origem guarda amount NEGATIVO; a de destino, POSITIVO — assim o
  * saldo de cada conta fica correto sem criar/destruir dinheiro (arquitetura §5).

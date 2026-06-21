@@ -8,6 +8,7 @@ import {
   deleteTransaction,
   listTransactions,
   payTransaction,
+  unpayTransaction,
   updateTransaction,
 } from './transactions.service';
 import {
@@ -96,6 +97,12 @@ export default async function transactionsRoutes(app: FastifyInstance): Promise<
     const { id } = request.params as { id: string };
     const body = paySchema.parse(request.body ?? {});
     const tx = await payTransaction(app.prisma, request.workspace!.id, id, body.paidAt);
+    return { transaction: tx };
+  });
+
+  app.post('/:id/unpay', { preHandler: [requireRole('MEMBER')] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const tx = await unpayTransaction(app.prisma, request.workspace!.id, id);
     return { transaction: tx };
   });
 
