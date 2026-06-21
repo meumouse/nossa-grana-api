@@ -1,5 +1,6 @@
 import type {
   AnalysisResult,
+  AnalyzeTransaction,
   ConsistencyFinding,
   ConsistencyKind,
   ConsistencySeverity,
@@ -89,6 +90,77 @@ export function coerceAnalysis(parsed: unknown, maxIndex: number): AnalysisResul
       };
     })
     .filter((f): f is ConsistencyFinding => f !== null);
+
+  return { findings };
+}
+
+const INSTALLMENT_RE = /\(?\b(\d{1,3})\s*\/\s*(\d{1,3})\b\)?/g;
+
+/**
+ * Extrai um marcador de parcela "(n/total)" da descrição (ex.: "Geladeira (3/10)").
+ * Devolve a base sem o marcador (normalizada) + o número da parcela e o total,
+ * ou null se não houver marcador plausível. Usa a ÚLTIMA ocorrência, que é onde
+ * o marcador costuma estar.
+ */
+function parseInstallment(description: string): { base: string; n: number; total: number } | null {
+  let match: RegExpExecArray | null;
+  let last: { idx: number; len: number; n: number; total: number } | null = null;
+  INSTALLMENT_RE.lastIndex = 0;
+  while ((match = INSTALLMENT_RE.exec(description)) !== null) {
+    const n = Number(match[1]);
+    const total = Number(match[2]);
+    if (total >= 2 && n >= 1 && n <= total) last = { idx: match.index, len: match[0].length, n, total };
+  }
+  if (!last) return null;
+  const base = (description.slice(0, last.idx) + description.slice(last.idx + last.len))
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { base, n: last.n, total: last.total };
+}
+
+/**
+ * Guard determinístico contra falsos positivos de DUPLICATE em parcelamentos.
+ * Parcelas de uma mesma compra (mesma base de descrição e mesmo total, com número
+ * de parcela distinto) NÃO são duplicatas — são lançamentos legítimos em sequência.
+ * O modelo às vezes as agrupa mesmo instruído a não fazê-lo; aqui removemos essas
+ * transações do achado e descartamos o achado se sobrar menos de 2.
+ */
+export function dropInstallmentDuplicates(
+  result: AnalysisResult,
+  transactions: AnalyzeTransaction[],
+): AnalysisResult {
+  const byIndex = new Map(transactions.map((t) => [t.index, t]));
+  const installmentOf = (i: number) => {
+    const tx = byIndex.get(i);
+    return tx ? parseInstallment(tx.description) : null;
+  };
+
+  const findings = result.findings
+    .map((f): ConsistencyFinding => {
+      if (f.kind !== 'DUPLICATE') return f;
+      // Conta os números de parcela distintos por série (base|total).
+      const series = new Map<string, Set<number>>();
+      for (const i of f.transactionIndices) {
+        const inst = installmentOf(i);
+        if (!inst) continue;
+        const key = `${inst.base}|${inst.total}`;
+        const set = series.get(key) ?? new Set<number>();
+        set.add(inst.n);
+        series.set(key, set);
+      }
+      // Séries com 2+ parcelas distintas são parcelamentos legítimos.
+      const installmentKeys = new Set(
+        [...series.entries()].filter(([, ns]) => ns.size >= 2).map(([k]) => k),
+      );
+      if (installmentKeys.size === 0) return f;
+      const kept = f.transactionIndices.filter((i) => {
+        const inst = installmentOf(i);
+        return !inst || !installmentKeys.has(`${inst.base}|${inst.total}`);
+      });
+      return { ...f, transactionIndices: kept };
+    })
+    .filter((f) => f.transactionIndices.length >= (f.kind === 'DUPLICATE' ? 2 : 1));
 
   return { findings };
 }

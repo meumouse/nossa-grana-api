@@ -4,7 +4,7 @@ import { BadRequest, NotFound } from '../../lib/errors';
 import { logActivity } from '../../lib/activity';
 import { randomUUID } from '../../lib/tokens';
 import { getOrCreateOpenInvoice } from '../invoices/invoices.service';
-import { getExtractor, resolveLlmConfig } from '../../lib/llm';
+import { dropInstallmentDuplicates, getExtractor, resolveLlmConfig } from '../../lib/llm';
 import type {
   analyzeSchema,
   createTxSchema,
@@ -106,7 +106,8 @@ export async function analyzeStatement(
     checks: input.checks,
     categoryNames: categories.map((c) => c.name),
   });
-  return result;
+  // Guard determinístico: remove parcelamentos que o modelo agrupa como duplicata.
+  return dropInstallmentDuplicates(result, input.transactions);
 }
 
 export async function createTransaction(

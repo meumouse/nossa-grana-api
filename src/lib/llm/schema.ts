@@ -107,7 +107,7 @@ export const analysisJsonSchema = {
 function checksHint(checks: ConsistencyKind[]): string {
   const labels: Record<ConsistencyKind, string> = {
     DUPLICATE:
-      'DUPLICATE: lançamentos que parecem a mesma transação repetida (mesmo valor e data próximos, ou descrições equivalentes). NÃO sinalize parcelas, assinaturas mensais ou compras legítimas repetidas como duplicata.',
+      'DUPLICATE: lançamentos que parecem a MESMA transação lançada em duplicidade — exige valor praticamente igual, datas muito próximas (poucos dias) E mesma contraparte/descrição. NÃO sinalize: parcelas (descrições com marcador "(n/total)", ex.: "(3/10)"), assinaturas/mensalidades recorrentes, nem compras repetidas legítimas com a mesma pessoa/serviço quando os valores ou as datas diferem. Valores diferentes para a mesma pessoa NÃO são duplicata.',
     CATEGORY:
       'CATEGORY: transações cuja categoria parece incoerente com a descrição (ex.: "Uber" categorizado como Alimentação).',
     AMOUNT:

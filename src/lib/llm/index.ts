@@ -26,6 +26,7 @@ export type {
 } from './types';
 export { LLM_PROVIDERS, PROVIDER_LIST, isLlmProvider } from './providers';
 export { listProviderModels } from './models';
+export { dropInstallmentDuplicates } from './parse';
 
 /** Campos de LLM vindos das settings do workspace (chave ainda cifrada). */
 export interface WorkspaceLlmSettings {
