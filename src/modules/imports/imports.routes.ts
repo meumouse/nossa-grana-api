@@ -40,12 +40,22 @@ export default async function importsRoutes(app: FastifyInstance): Promise<void>
     const filename = file.filename || 'documento';
     const mimeType = file.mimetype || 'application/octet-stream';
     const source = detectSource(filename, mimeType);
-    const { accountId } = request.query as { accountId?: string };
+    const { accountId, creditCardId } = request.query as {
+      accountId?: string;
+      creditCardId?: string;
+    };
 
     const batch = await createBatch(
       app.prisma,
       { workspaceId: request.workspace!.id, userId: request.userId! },
-      { source, filename, mimeType, data: buffer, defaultAccountId: accountId },
+      {
+        source,
+        filename,
+        mimeType,
+        data: buffer,
+        defaultAccountId: accountId,
+        defaultCreditCardId: creditCardId,
+      },
     );
     return reply.code(201).send({ batch });
   });

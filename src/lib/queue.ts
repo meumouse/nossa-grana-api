@@ -21,8 +21,10 @@ export interface ConfirmImportJobData {
   batchId: string;
   workspaceId: string;
   userId: string;
-  /** Conta usada para itens que ficaram sem conta na revisão. */
+  /** Conta usada para itens que ficaram sem dono na revisão. */
   defaultAccountId?: string;
+  /** Cartão usado para itens que ficaram sem dono na revisão. */
+  defaultCreditCardId?: string;
 }
 
 /**
