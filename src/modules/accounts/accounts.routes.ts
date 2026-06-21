@@ -19,7 +19,7 @@ const baseSchema = z.object({
     'OTHER',
   ]),
   currency: z.string().length(3).default('BRL'),
-  institutionId: z.string().optional(),
+  institutionId: z.string().nullable().optional(),
   iconColor: z.string().max(20).optional(),
   openingBalance: z.coerce.number().optional(),
   includeInTotal: z.boolean().optional(),
@@ -31,7 +31,10 @@ const baseSchema = z.object({
   paymentDueDay: z.number().int().min(1).max(31).optional(),
   lateInterestRate: z.coerce.number().min(0).optional(),
   paymentAccountId: z.string().optional(),
-  // Conta bancária (LIS / cheque especial)
+  // Conta bancária (dados + LIS / cheque especial)
+  agency: z.string().max(20).nullable().optional(),
+  accountNumber: z.string().max(30).nullable().optional(),
+  accountDigit: z.string().max(5).nullable().optional(),
   overdraftLimit: z.coerce.number().min(0).optional(),
   overdraftInterestRate: z.coerce.number().min(0).optional(),
   // Financiamento

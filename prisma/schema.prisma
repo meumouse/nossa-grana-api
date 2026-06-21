@@ -284,6 +284,10 @@ model Account {
   cardsPaidByThis     Account[] @relation("CardPaymentAccount")
 
   // --- Específico de CONTA BANCÁRIA (type = CHECKING/SAVINGS) ---
+  // Dados bancários. Strings para preservar zeros à esquerda.
+  agency        String?  // agência (ex.: "0001")
+  accountNumber String?  // número da conta (ex.: "12345")
+  accountDigit  String?  // dígito verificador da conta (ex.: "6")
   // LIS / cheque especial: limite de crédito rotativo da conta.
   overdraftLimit        Decimal? @db.Decimal(18, 2)
   // juros do limite/conta (taxa mensal, ex.: 0.08 = 8% a.m.)
