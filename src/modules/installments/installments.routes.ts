@@ -61,6 +61,73 @@ function splitAmount(total: Decimal, n: number): Decimal[] {
   return [...parts, last];
 }
 
+/** Garante que a conta/cartão informado pertence ao workspace. */
+async function assertOwner(
+  app: FastifyInstance,
+  workspaceId: string,
+  body: z.infer<typeof createSchema>,
+): Promise<void> {
+  if (body.creditCardId) {
+    const card = await app.prisma.creditCard.findFirst({
+      where: { id: body.creditCardId, workspaceId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!card) throw BadRequest('Cartão inválido para este workspace');
+  } else {
+    const account = await app.prisma.account.findFirst({
+      where: { id: body.accountId, workspaceId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!account) throw BadRequest('Conta inválida para este workspace');
+  }
+}
+
+/**
+ * Monta as N parcelas (Transaction) de um plano. Parcelas anteriores à inicial
+ * entram quitadas (COMPLETED); cada parcela recebe um clone do rateio com estado
+ * de pagamento próprio.
+ */
+function buildParcelaRows(opts: {
+  workspaceId: string;
+  userId: string;
+  planId: string;
+  body: z.infer<typeof createSchema>;
+  amounts: Decimal[];
+  planFirstDue: Date;
+  shared: boolean;
+  shareCount: number | null;
+  shares: ShareRow[] | null;
+}) {
+  const { workspaceId, userId, planId, body, amounts, planFirstDue, shared, shareCount, shares } =
+    opts;
+  return amounts.map((amount, i) => {
+    const number = i + 1;
+    const due = addMonths(planFirstDue, i);
+    const isPaid = number < body.startInstallment;
+    return {
+      workspaceId,
+      accountId: body.accountId ?? null,
+      creditCardId: body.creditCardId ?? null,
+      type: 'EXPENSE' as const,
+      status: isPaid ? ('COMPLETED' as const) : ('PENDING' as const),
+      paidAt: isPaid ? due : null,
+      amount,
+      description: `${body.description} (${number}/${body.installments})`,
+      categoryId: body.categoryId ?? null,
+      date: due,
+      dueDate: due,
+      installmentPlanId: planId,
+      installmentNumber: number,
+      createdById: userId,
+      shared,
+      shareCount,
+      // Clona o modelo p/ cada parcela ter estado de pagamento próprio.
+      shares:
+        shared && shares ? (shares.map((s) => ({ ...s })) as Prisma.InputJsonValue) : Prisma.DbNull,
+    };
+  });
+}
+
 export default async function installmentsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', async (request) => {
     const items = await app.prisma.installmentPlan.findMany({
@@ -85,19 +152,7 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
   app.post('/', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
     const body = createSchema.parse(request.body);
 
-    if (body.creditCardId) {
-      const card = await app.prisma.creditCard.findFirst({
-        where: { id: body.creditCardId, workspaceId: request.workspace!.id, deletedAt: null },
-        select: { id: true },
-      });
-      if (!card) throw BadRequest('Cartão inválido para este workspace');
-    } else {
-      const account = await app.prisma.account.findFirst({
-        where: { id: body.accountId, workspaceId: request.workspace!.id, deletedAt: null },
-        select: { id: true },
-      });
-      if (!account) throw BadRequest('Conta inválida para este workspace');
-    }
+    await assertOwner(app, request.workspace!.id, body);
 
     const amounts = splitAmount(new Decimal(body.totalAmount), body.installments);
 
@@ -128,31 +183,16 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
       });
 
       await tx.transaction.createMany({
-        data: amounts.map((amount, i) => {
-          const number = i + 1;
-          const due = addMonths(planFirstDue, i);
-          // Parcelas anteriores à inicial já estão quitadas.
-          const isPaid = number < body.startInstallment;
-          return {
-            workspaceId: request.workspace!.id,
-            accountId: body.accountId ?? null,
-            creditCardId: body.creditCardId ?? null,
-            type: 'EXPENSE' as const,
-            status: isPaid ? ('COMPLETED' as const) : ('PENDING' as const),
-            paidAt: isPaid ? due : null,
-            amount,
-            description: `${body.description} (${number}/${body.installments})`,
-            categoryId: body.categoryId ?? null,
-            date: due,
-            dueDate: due,
-            installmentPlanId: created.id,
-            installmentNumber: number,
-            createdById: request.userId!,
-            shared,
-            shareCount,
-            // Clona o modelo p/ cada parcela ter estado de pagamento próprio.
-            shares: shared ? (shares.map((s) => ({ ...s })) as Prisma.InputJsonValue) : Prisma.DbNull,
-          };
+        data: buildParcelaRows({
+          workspaceId: request.workspace!.id,
+          userId: request.userId!,
+          planId: created.id,
+          body,
+          amounts,
+          planFirstDue,
+          shared,
+          shareCount,
+          shares,
         }),
       });
 
@@ -160,6 +200,68 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
     });
 
     return reply.code(201).send({ plan });
+  });
+
+  // Edita o plano: atualiza valor/parcelas/datas/conta-cartão/categoria/rateio e
+  // regenera o quadro de parcelas. As parcelas atuais são removidas (soft delete)
+  // e recriadas; parcelas anteriores à `startInstallment` voltam como quitadas.
+  app.patch('/:id', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = createSchema.parse(request.body);
+
+    const existing = await app.prisma.installmentPlan.findFirst({
+      where: { id, workspaceId: request.workspace!.id, deletedAt: null },
+      select: { id: true },
+    });
+    if (!existing) throw NotFound('Parcelamento não encontrado');
+
+    await assertOwner(app, request.workspace!.id, body);
+
+    const amounts = splitAmount(new Decimal(body.totalAmount), body.installments);
+    const shares = normalizeShares(body.shares);
+    const shared = shares !== null;
+    const shareCount = shared ? Math.max(body.shareCount ?? shares.length, shares.length) : null;
+    const planFirstDue = addMonths(body.firstDueDate, -(body.startInstallment - 1));
+
+    const plan = await app.prisma.$transaction(async (tx) => {
+      const updated = await tx.installmentPlan.update({
+        where: { id },
+        data: {
+          description: body.description,
+          totalAmount: body.totalAmount,
+          installments: body.installments,
+          firstDueDate: planFirstDue,
+          categoryId: body.categoryId ?? null,
+          shared,
+          shareCount,
+          shares: shared ? (shares as Prisma.InputJsonValue) : Prisma.DbNull,
+        },
+      });
+
+      // Remove o quadro atual e regenera do zero com os novos parâmetros.
+      await tx.transaction.updateMany({
+        where: { installmentPlanId: id, deletedAt: null },
+        data: { deletedAt: new Date() },
+      });
+
+      await tx.transaction.createMany({
+        data: buildParcelaRows({
+          workspaceId: request.workspace!.id,
+          userId: request.userId!,
+          planId: id,
+          body,
+          amounts,
+          planFirstDue,
+          shared,
+          shareCount,
+          shares,
+        }),
+      });
+
+      return updated;
+    });
+
+    return reply.send({ plan });
   });
 
   app.delete('/:id', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
