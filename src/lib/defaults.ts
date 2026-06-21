@@ -13,6 +13,10 @@ const DEFAULT_CATEGORIES: Array<{
   // Receitas
   { name: 'Salário', kind: 'INCOME', nature: 'INCOME', color: '#16a34a' },
   { name: 'Renda extra', kind: 'INCOME', nature: 'INCOME', color: '#22c55e' },
+  // Entradas que não são renda (reembolsos / dinheiro de terceiros)
+  { name: 'Reembolso', kind: 'INCOME', nature: 'OTHER', color: '#14b8a6' },
+  { name: 'Vaquinha / Rateio', kind: 'INCOME', nature: 'OTHER', color: '#0ea5e9' },
+  { name: 'Empréstimo recebido', kind: 'INCOME', nature: 'OTHER', color: '#0891b2' },
   // Despesas fixas
   { name: 'Moradia', kind: 'EXPENSE', nature: 'FIXED', color: '#ef4444' },
   { name: 'Contas & assinaturas', kind: 'EXPENSE', nature: 'FIXED', color: '#f97316' },
