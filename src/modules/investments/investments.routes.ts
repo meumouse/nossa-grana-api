@@ -83,6 +83,23 @@ export default async function investmentsRoutes(app: FastifyInstance): Promise<v
     return { asset };
   });
 
+  /**
+   * Exclui um ativo. Hard delete: os movimentos do ativo são removidos junto
+   * (InvestmentTransaction.assetId tem onDelete: Cascade). A posição é derivada
+   * dos movimentos, então não sobra estado órfão.
+   */
+  app.delete('/assets/:id', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const existing = await app.prisma.investmentAsset.findFirst({
+      where: { id, workspaceId: request.workspace!.id },
+      select: { id: true },
+    });
+    if (!existing) throw NotFound('Ativo não encontrado');
+
+    await app.prisma.investmentAsset.delete({ where: { id } });
+    return reply.code(204).send();
+  });
+
   // Movimentos do ativo.
   app.post('/transactions', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
     const body = txSchema.parse(request.body);

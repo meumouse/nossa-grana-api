@@ -104,4 +104,22 @@ export default async function invoicesRoutes(app: FastifyInstance): Promise<void
 
     return { invoice: updated, transfer };
   });
+
+  /**
+   * Exclui uma fatura. Hard delete: os lançamentos vinculados são preservados e
+   * apenas desvinculados (Transaction.creditCardInvoiceId tem onDelete: SetNull).
+   * O ciclo (creditCardId, closingDate) volta a ficar livre e é rematerializado
+   * sob demanda na próxima compra/parcela do período.
+   */
+  app.delete('/:id', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const invoice = await app.prisma.creditCardInvoice.findFirst({
+      where: { id, workspaceId: request.workspace!.id },
+      select: { id: true },
+    });
+    if (!invoice) throw NotFound('Fatura não encontrada');
+
+    await app.prisma.creditCardInvoice.delete({ where: { id } });
+    return reply.code(204).send();
+  });
 }
