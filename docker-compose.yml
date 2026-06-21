@@ -20,6 +20,24 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: nossa-grana-redis
+    restart: unless-stopped
+    # Cache compartilhado/persistente. Host na 6380 p/ não conflitar com um
+    # Redis local na 6379. `--save ""` desliga a persistência em disco: é só
+    # cache, pode ser recriado a qualquer momento.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6380:6379"
+    networks:
+      - nossa-grana-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   api:
     build:
       context: .
@@ -29,11 +47,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 3333
       DATABASE_URL: "postgresql://nossagrana:nossagrana@db:5432/nossagrana?schema=public"
+      # Cache em Redis (serviço acima). Remova esta linha p/ cair no cache em
+      # memória (in-process), que também funciona sem nenhuma infra extra.
+      REDIS_URL: "redis://redis:6379"
       CORS_ORIGIN: "http://localhost:8081"
       # Segredos de DEV — troque em produção (openssl rand -hex 48).
       JWT_ACCESS_SECRET: "dev-access-secret-change-me-please-0123456789abcdef"

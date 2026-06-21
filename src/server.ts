@@ -7,6 +7,7 @@ import multipart from '@fastify/multipart';
 import { corsOrigins, env } from './env';
 import { buildLoggerOptions } from './lib/logger';
 import prismaPlugin from './plugins/prisma';
+import cachePlugin from './plugins/cache';
 import authPlugin from './plugins/auth';
 import errorHandler from './plugins/error-handler';
 import { registerRoutes } from './routes';
@@ -31,6 +32,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // Infra
   await app.register(prismaPlugin);
+  await app.register(cachePlugin);
   await app.register(authPlugin);
   await app.register(errorHandler);
 

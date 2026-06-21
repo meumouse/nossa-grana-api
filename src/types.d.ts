@@ -1,5 +1,6 @@
 import 'fastify';
 import type { PrismaClient, MemberRole } from '@prisma/client';
+import type { Cache } from './lib/cache';
 
 /** Contexto do workspace ativo, resolvido pelo plugin de workspace. */
 export interface WorkspaceContext {
@@ -11,6 +12,8 @@ export interface WorkspaceContext {
 declare module 'fastify' {
   interface FastifyInstance {
     prisma: PrismaClient;
+    /** Cache da aplicação (memória ou Redis — ver lib/cache). */
+    cache: Cache;
     /** preHandler: exige access token válido; popula request.userId. */
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }

@@ -17,6 +17,22 @@ const schema = z.object({
 
   DATABASE_URL: z.string().url(),
 
+  // --- Cache ---
+  // Sem REDIS_URL, o cache roda EM MEMÓRIA (in-process): zero infra, ótimo p/
+  // dados quentes (ex.: associação do usuário ao workspace). Definindo a URL
+  // (ex.: redis://localhost:6379), passa a usar Redis — cache compartilhado
+  // entre instâncias e persistente entre restarts. Requer a dep `ioredis`.
+  REDIS_URL: z.string().optional(),
+  // Teto de entradas do cache em memória (evicção por idade ao estourar).
+  CACHE_MAX_MEMORY_ENTRIES: z.coerce.number().int().positive().default(5000),
+  // TTL padrão (s) quando o set não informa um — fallback de segurança.
+  CACHE_DEFAULT_TTL_SECONDS: z.coerce.number().int().positive().default(60),
+  // TTL (s) da associação usuário↔workspace (lida em toda request escopada).
+  // Curto de propósito: mudanças de papel/remoção também invalidam na hora.
+  CACHE_TTL_MEMBER_SECONDS: z.coerce.number().int().positive().default(30),
+  // TTL (s) do catálogo de instituições (dado quase estático).
+  CACHE_TTL_INSTITUTIONS_SECONDS: z.coerce.number().int().positive().default(300),
+
   JWT_ACCESS_SECRET: z.string().min(24),
   JWT_REFRESH_SECRET: z.string().min(24),
   // Chave p/ cifrar segredos guardados no banco (ex.: chave de LLM por
@@ -24,6 +40,13 @@ const schema = z.object({
   SETTINGS_ENCRYPTION_KEY: z.string().min(16).optional(),
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
+
+  // --- Login com Google (Google Identity Services) ---
+  // Client ID OAuth do Google Cloud (tipo "Web application"). OPCIONAL: sem ele
+  // o login com Google fica desativado e o app segue só com e-mail/senha. É o
+  // mesmo valor usado no PWA (VITE_GOOGLE_CLIENT_ID) — o backend só o usa como
+  // `audience` ao validar o ID token, então NÃO precisa do client secret.
+  GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
 
   INVITATION_TTL_DAYS: z.coerce.number().int().positive().default(7),
 
@@ -131,8 +154,17 @@ export type Env = typeof env;
 /** Storage habilitado somente quando o bucket está configurado. */
 export const storageEnabled = Boolean(env.S3_BUCKET);
 
+/**
+ * Fila de jobs (BullMQ) habilitada somente quando há Redis configurado. Sem
+ * Redis, a confirmação de importação roda inline no request (modo legado).
+ */
+export const queueEnabled = Boolean(env.REDIS_URL);
+
 /** Envio de e-mail habilitado somente quando a chave do Resend está configurada. */
 export const emailEnabled = Boolean(env.RESEND_API_KEY);
+
+/** Login com Google habilitado somente quando o Client ID está configurado. */
+export const googleAuthEnabled = Boolean(env.GOOGLE_OAUTH_CLIENT_ID);
 
 /** Lista de origens permitidas para CORS. */
 export const corsOrigins = env.CORS_ORIGIN.split(',')

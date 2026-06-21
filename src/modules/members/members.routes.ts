@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { BadRequest, Forbidden, NotFound } from '../../lib/errors';
 import { requireRole } from '../../plugins/workspace';
 import { logActivity } from '../../lib/activity';
+import { memberCacheKey } from '../../lib/cache';
 
 const updateSchema = z.object({
   role: z.enum(['OWNER', 'ADMIN', 'MEMBER', 'VIEWER']).optional(),
@@ -52,6 +53,9 @@ export default async function membersRoutes(app: FastifyInstance): Promise<void>
       where: { id: memberId },
       data: { role: body.role, displayName: body.displayName },
     });
+    // Invalida o cache de membership (papel pode ter mudado) para o próximo
+    // acesso já enxergar o novo papel sem esperar o TTL.
+    await app.cache.del(memberCacheKey(request.workspace!.id, target.userId));
     return { member };
   });
 
@@ -71,6 +75,9 @@ export default async function membersRoutes(app: FastifyInstance): Promise<void>
     }
 
     await app.prisma.member.update({ where: { id: memberId }, data: { deletedAt: new Date() } });
+    // Revoga o acesso cacheado na hora — sem isso, o removido ainda passaria
+    // no resolveWorkspace até o TTL expirar.
+    await app.cache.del(memberCacheKey(request.workspace!.id, target.userId));
     await logActivity(app.prisma, {
       workspaceId: request.workspace!.id,
       actorId: request.userId,
