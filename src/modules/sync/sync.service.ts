@@ -21,6 +21,25 @@ function resolveRef(idMap: IdMap, value: string | null | undefined): string | nu
 }
 
 /**
+ * Resolve uma transação existente pela referência vinda do device. Normalmente é
+ * o clientId (UUID do device); mas registros que nasceram no SERVIDOR (import sem
+ * clientId, transferências) chegam ao device e passam a usar o `id` do servidor
+ * como clientId local. Por isso procura por clientId e, na falha, pelo próprio id
+ * — assim o push ATUALIZA em vez de duplicar (e o delete encontra o registro).
+ */
+async function findTransaction(db: PrismaClient, ref: string) {
+  const byClient = await db.transaction.findUnique({
+    where: { clientId: ref },
+    select: { id: true, workspaceId: true, clientId: true },
+  });
+  if (byClient) return byClient;
+  return db.transaction.findUnique({
+    where: { id: ref },
+    select: { id: true, workspaceId: true, clientId: true },
+  });
+}
+
+/**
  * Recebe um lote de mutações idempotentes do dispositivo. Upsert por clientId →
  * reenviar a fila nunca duplica. Resolve referências criadas no mesmo lote via
  * idMap. Resolução de conflito: LWW por ORDEM DE CHEGADA (o último push aplica;
@@ -98,11 +117,14 @@ export async function push(
 
   // 4) Transações (resolve accountId/creditCardId/categoryId via idMap)
   for (const c of payload.transactions) {
+    const existing = await findTransaction(db, c.clientId);
+    // Não permite que um device altere registro de outro workspace.
+    if (existing && existing.workspaceId !== workspaceId) continue;
+
     if (c.deleted) {
-      const found = await db.transaction.findUnique({ where: { clientId: c.clientId }, select: { id: true, workspaceId: true } });
-      if (found && found.workspaceId === workspaceId) {
-        await db.transaction.update({ where: { id: found.id }, data: { deletedAt: new Date() } });
-        idMap.set(c.clientId, found.id);
+      if (existing) {
+        await db.transaction.update({ where: { id: existing.id }, data: { deletedAt: new Date() } });
+        idMap.set(c.clientId, existing.id);
       }
       continue;
     }
@@ -130,12 +152,20 @@ export async function push(
       // JSON do Prisma: null vira DbNull (limpa a coluna); array é gravado como tal.
       shares: c.data.shares == null ? Prisma.DbNull : (c.data.shares as Prisma.InputJsonValue),
     };
-    const rec = await db.transaction.upsert({
-      where: { clientId: c.clientId },
-      create: { ...data, clientId: c.clientId, workspaceId, createdById: userId },
-      update: { ...data, deletedAt: null },
-      select: { id: true },
-    });
+    let rec: { id: string };
+    if (existing) {
+      // Backfilla o clientId quando o registro nasceu no servidor (era null).
+      rec = await db.transaction.update({
+        where: { id: existing.id },
+        data: { ...data, deletedAt: null, ...(existing.clientId ? {} : { clientId: c.clientId }) },
+        select: { id: true },
+      });
+    } else {
+      rec = await db.transaction.create({
+        data: { ...data, clientId: c.clientId, workspaceId, createdById: userId },
+        select: { id: true },
+      });
+    }
     idMap.set(c.clientId, rec.id);
   }
 

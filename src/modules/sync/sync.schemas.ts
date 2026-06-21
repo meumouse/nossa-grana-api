@@ -77,7 +77,11 @@ const transactionData = z.object({
 
 const change = <T extends z.ZodTypeAny>(data: T) =>
   z.object({
-    clientId: z.string().uuid(),
+    // Normalmente um UUID gerado no device, mas registros nascidos no SERVIDOR
+    // (import sem clientId, transferências com sufixo `:out`/`:in`) viajam com o
+    // próprio id/cuid como clientId quando editados offline. Aceita qualquer
+    // string não-vazia; o push resolve o registro por clientId OU id.
+    clientId: z.string().min(1),
     deleted: z.boolean().optional(),
     data: data.optional(), // ausente quando deleted=true
   });
