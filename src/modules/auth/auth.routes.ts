@@ -1,13 +1,18 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { getMe, loginUser, registerUser } from './auth.service';
+import { env, googleAuthEnabled } from '../../env';
+import { BadRequest } from '../../lib/errors';
+import { getMe, loginUser, registerUser, updateProfile } from './auth.service';
+import { loginWithGoogle } from './auth.google';
 import { issueTokens, revokeToken, rotateTokens, type DeviceInfo } from './auth.tokens';
 import {
   forgotPasswordSchema,
+  googleAuthSchema,
   loginSchema,
   logoutSchema,
   refreshSchema,
   registerSchema,
   resetPasswordSchema,
+  updateProfileSchema,
   verifyEmailSchema,
 } from './auth.schemas';
 import {
@@ -15,6 +20,7 @@ import {
   requestPasswordReset,
   resendVerification,
   resetPassword,
+  sendUserVerification,
   verifyEmail,
 } from './auth.verification';
 
@@ -47,6 +53,16 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ user, ...tokens });
   });
 
+  // Login/cadastro com Google (Google Identity Services). O PWA envia o ID token
+  // (`credential`); validamos contra o Client ID e emitimos nossos próprios tokens.
+  app.post('/google', async (request, reply) => {
+    if (!googleAuthEnabled) throw BadRequest('Login com Google não está disponível');
+    const body = googleAuthSchema.parse(request.body);
+    const { user, isNew } = await loginWithGoogle(app.prisma, body.credential, env.GOOGLE_OAUTH_CLIENT_ID!);
+    const tokens = await issueTokens(app, app.prisma, user.id, deviceFrom(request, body.deviceId));
+    return reply.code(isNew ? 201 : 200).send({ user, ...tokens });
+  });
+
   app.post('/refresh', async (request, reply) => {
     const body = refreshSchema.parse(request.body);
     const tokens = await rotateTokens(app, app.prisma, body.refreshToken, deviceFrom(request, body.deviceId));
@@ -61,6 +77,20 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/me', { preHandler: [app.authenticate] }, async (request) => {
     const user = await getMe(app.prisma, request.userId!);
+    return { user };
+  });
+
+  // Atualiza o perfil (nome, sobrenome, e-mail, telefone, avatar). Ao trocar o
+  // e-mail, dispara uma nova verificação p/ o novo endereço (não bloqueia a
+  // resposta; falha de envio é apenas logada).
+  app.patch('/me', { preHandler: [app.authenticate] }, async (request) => {
+    const body = updateProfileSchema.parse(request.body);
+    const { user, emailChanged } = await updateProfile(app.prisma, request.userId!, body);
+    if (emailChanged) {
+      void sendUserVerification(app.prisma, { id: user.id, email: user.email, name: user.name }).catch(
+        (err) => app.log.error({ err }, 'falha ao enviar verificação após troca de e-mail'),
+      );
+    }
     return { user };
   });
 
