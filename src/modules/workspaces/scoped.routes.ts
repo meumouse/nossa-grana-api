@@ -38,11 +38,14 @@ const llmModelsSchema = z.object({
   apiKey: z.string().max(300).optional(),
 });
 
-/** Remove a chave crua da resposta; expõe só se está configurada. */
+/** Remove a chave crua da resposta; expõe só se está configurada e legível. */
 function publicSettings(settings: WorkspaceSettings | null) {
   if (!settings) return null;
   const { llmApiKey, ...rest } = settings;
-  return { ...rest, llmApiKeySet: Boolean(llmApiKey) };
+  // Só consideramos configurada se a chave também for decifrável: se o segredo
+  // de cifragem mudou, o valor guardado vira lixo e precisa ser redigitado —
+  // mostrar "Configurada" nesse caso confunde o usuário.
+  return { ...rest, llmApiKeySet: Boolean(decryptSecret(llmApiKey)) };
 }
 
 /**
@@ -119,7 +122,13 @@ export default async function workspaceScopedRoutes(app: FastifyInstance): Promi
     const apiKey =
       body.apiKey?.trim() || decryptSecret(settings?.llmApiKey) || envApiKeyFor(provider);
     if (!apiKey) {
-      throw BadRequest('Configure a chave de API do provedor para buscar os modelos.');
+      // Se há chave gravada mas indecifrável (o segredo de cifragem mudou),
+      // orienta a redigitar em vez do genérico "configure a chave".
+      throw BadRequest(
+        settings?.llmApiKey
+          ? 'A chave de API salva não pôde ser lida (o segredo de cifragem mudou desde que ela foi salva). Digite a chave novamente para regravá-la.'
+          : 'Configure a chave de API do provedor para buscar os modelos.',
+      );
     }
 
     const models = await listProviderModels(provider, apiKey);
