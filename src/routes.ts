@@ -12,6 +12,7 @@ import accountsRoutes from './modules/accounts/accounts.routes';
 import categoriesRoutes from './modules/categories/categories.routes';
 import tagsRoutes from './modules/tags/tags.routes';
 import transactionsRoutes from './modules/transactions/transactions.routes';
+import attachmentsRoutes from './modules/attachments/attachments.routes';
 import budgetsRoutes from './modules/budgets/budgets.routes';
 import recurringRoutes from './modules/recurring/recurring.routes';
 import installmentsRoutes from './modules/installments/installments.routes';
@@ -42,6 +43,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       scoped.register(categoriesRoutes, { prefix: '/categories' });
       scoped.register(tagsRoutes, { prefix: '/tags' });
       scoped.register(transactionsRoutes, { prefix: '/transactions' });
+      scoped.register(attachmentsRoutes, { prefix: '/transactions/:transactionId/attachments' });
       scoped.register(budgetsRoutes, { prefix: '/budgets' });
       scoped.register(recurringRoutes, { prefix: '/recurring' });
       scoped.register(installmentsRoutes, { prefix: '/installments' });

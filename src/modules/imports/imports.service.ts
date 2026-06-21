@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { BadRequest, NotFound } from '../../lib/errors';
 import { randomUUID } from '../../lib/tokens';
 import { getExtractor, resolveLlmConfig, type ExtractedTransaction } from '../../lib/llm';
+import { buildKey, getDownloadUrl, isStorageEnabled, putObject } from '../../lib/storage';
 import { createTransaction } from '../transactions/transactions.service';
 import { parseCsv, parseOfx, type ParsedRow } from './parsers';
 import type { confirmSchema, patchItemSchema } from './imports.schemas';
@@ -111,6 +112,24 @@ export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatch
       model: extractor.modelLabel,
     },
   });
+
+  // Persiste o documento original em storage (best-effort): uma falha aqui não
+  // derruba a importação, que é a função principal. A chave fica no batch p/
+  // auditoria e eventual reprocessamento.
+  if (isStorageEnabled) {
+    try {
+      const key = buildKey({
+        workspaceId: ctx.workspaceId,
+        prefix: 'imports',
+        ownerId: ctx.userId,
+        filename: input.filename,
+      });
+      await putObject({ key, body: input.data, contentType: input.mimeType });
+      await db.importBatch.update({ where: { id: batch.id }, data: { fileKey: key } });
+    } catch {
+      // segue sem persistir o arquivo — não bloqueia a extração
+    }
+  }
 
   try {
     const categories = await loadCategories(db, ctx.workspaceId);
@@ -269,6 +288,22 @@ export async function confirmBatch(
   await db.importBatch.update({ where: { id: batchId }, data: { status: 'CONFIRMED' } });
   const result = await getBatch(db, ctx.workspaceId, batchId);
   return { batch: result, imported };
+}
+
+/**
+ * Devolve uma URL assinada (temporária) p/ baixar o documento original do lote.
+ * Lança se o storage estiver desligado ou o lote não tiver arquivo persistido.
+ */
+export async function getBatchFileUrl(db: PrismaClient, workspaceId: string, id: string) {
+  if (!isStorageEnabled) throw BadRequest('Storage de documentos não está configurado.');
+  const batch = await db.importBatch.findFirst({
+    where: { id, workspaceId, deletedAt: null },
+    select: { fileKey: true, filename: true },
+  });
+  if (!batch) throw NotFound('Importação não encontrada');
+  if (!batch.fileKey) throw NotFound('Documento original não disponível para esta importação');
+  const url = await getDownloadUrl(batch.fileKey, batch.filename ?? undefined);
+  return { url };
 }
 
 export async function cancelBatch(db: PrismaClient, workspaceId: string, id: string) {

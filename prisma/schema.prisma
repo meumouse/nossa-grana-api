@@ -42,9 +42,31 @@ model User {
   preferences        UserPreferences?
   sessions           Session[]
   oauthAccounts      OAuthAccount[]
+  verificationTokens VerificationToken[]
   createdTransactions Transaction[]   @relation("TransactionCreatedBy")
   sentInvitations    Invitation[]     @relation("InvitationInvitedBy")
   activities         ActivityLog[]
+}
+
+// Token de uso único p/ fluxos por e-mail (recuperação de senha, verificação de
+// conta). Guardamos apenas o HASH (sha256) do token — o valor cru só existe no
+// link enviado por e-mail. `purpose` separa os fluxos; `usedAt` impede reuso.
+model VerificationToken {
+  id        String              @id @default(cuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose   VerificationPurpose
+  tokenHash String              @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  @@index([userId, purpose])
+}
+
+enum VerificationPurpose {
+  PASSWORD_RESET
+  EMAIL_VERIFICATION
 }
 
 // Sessão por refresh-token (auth stateless: access JWT curto + refresh rotativo)
@@ -694,6 +716,9 @@ model ImportBatch {
 
   filename String?
   mimeType String?
+  // chave do documento original em object storage (S3/R2); null quando o
+  // storage está desligado ou o upload falhou. Usado p/ auditoria/reprocesso.
+  fileKey  String?
   model    String? // modelo/provider usado na extração (ex.: "openai:gpt-4o")
 
   // saída crua da extração (resposta do LLM / parser) p/ depuração e auditoria

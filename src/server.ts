@@ -5,6 +5,7 @@ import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import { corsOrigins, env } from './env';
+import { buildLoggerOptions } from './lib/logger';
 import prismaPlugin from './plugins/prisma';
 import authPlugin from './plugins/auth';
 import errorHandler from './plugins/error-handler';
@@ -12,10 +13,7 @@ import { registerRoutes } from './routes';
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({
-    logger:
-      env.NODE_ENV === 'development'
-        ? { transport: { target: 'pino-pretty', options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' } } }
-        : { level: 'info' },
+    logger: buildLoggerOptions(),
     trustProxy: true,
   });
 
@@ -36,8 +34,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(authPlugin);
   await app.register(errorHandler);
 
-  // Health check (sem auth)
-  app.get('/health', async () => ({ status: 'ok', time: new Date().toISOString() }));
+  // Health check (sem auth). logLevel 'silent' evita poluir o log com o
+  // polling de health do orquestrador/load balancer.
+  app.get('/health', { logLevel: 'silent' }, async () => ({
+    status: 'ok',
+    time: new Date().toISOString(),
+  }));
 
   // API
   await app.register(registerRoutes, { prefix: '/api' });

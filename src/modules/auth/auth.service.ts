@@ -6,6 +6,7 @@ import { createDefaultCategories } from '../../lib/defaults';
 export interface PublicUser {
   id: string;
   email: string;
+  emailVerified: boolean;
   name: string | null;
   avatarUrl: string | null;
   locale: string;
@@ -15,6 +16,7 @@ export interface PublicUser {
 function toPublic(u: {
   id: string;
   email: string;
+  emailVerified: Date | null;
   name: string | null;
   avatarUrl: string | null;
   locale: string;
@@ -23,6 +25,7 @@ function toPublic(u: {
   return {
     id: u.id,
     email: u.email,
+    emailVerified: u.emailVerified !== null,
     name: u.name,
     avatarUrl: u.avatarUrl,
     locale: u.locale,

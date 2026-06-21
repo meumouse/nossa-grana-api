@@ -7,6 +7,7 @@ import {
   confirmBatch,
   createBatch,
   getBatch,
+  getBatchFileUrl,
   listBatches,
   patchItem,
 } from './imports.service';
@@ -58,6 +59,12 @@ export default async function importsRoutes(app: FastifyInstance): Promise<void>
     const { id } = request.params as { id: string };
     const batch = await getBatch(app.prisma, request.workspace!.id, id);
     return { batch };
+  });
+
+  // URL assinada p/ baixar o documento original enviado à importação.
+  app.get('/:id/file', async (request) => {
+    const { id } = request.params as { id: string };
+    return getBatchFileUrl(app.prisma, request.workspace!.id, id);
   });
 
   app.patch('/:id/items/:itemId', { preHandler: [requireRole('MEMBER')] }, async (request) => {
