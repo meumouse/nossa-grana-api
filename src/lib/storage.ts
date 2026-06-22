@@ -89,6 +89,23 @@ export async function putObject(input: PutObjectInput): Promise<void> {
   );
 }
 
+/**
+ * Baixa um objeto inteiro em memória (Buffer). É como o worker de extração relê
+ * o documento original persistido no upload. Lança se o storage estiver
+ * desligado ou o objeto não existir.
+ */
+export async function getObject(key: string): Promise<Buffer> {
+  const response = await getClient().send(
+    new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }),
+  );
+  const body = response.Body;
+  if (!body) throw new Error(`Objeto vazio ou inexistente: ${key}`);
+  // O Body do SDK v3 (Node) é um Readable; transformToByteArray cobre stream e
+  // blob de forma portável entre runtimes.
+  const bytes = await (body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
+  return Buffer.from(bytes);
+}
+
 /** Remove um objeto. Best-effort: não lança se o objeto já não existe. */
 export async function deleteObject(key: string): Promise<void> {
   await getClient().send(

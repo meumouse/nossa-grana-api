@@ -2,10 +2,10 @@ import type { ImportSource, Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { queueEnabled } from '../../env';
 import { BadRequest, NotFound } from '../../lib/errors';
-import { enqueueConfirmImport } from '../../lib/queue';
+import { enqueueConfirmImport, enqueueExtractImport } from '../../lib/queue';
 import { randomUUID } from '../../lib/tokens';
 import { getExtractor, resolveLlmConfig, type ExtractedTransaction } from '../../lib/llm';
-import { buildKey, getDownloadUrl, isStorageEnabled, putObject } from '../../lib/storage';
+import { getDownloadUrl, getObject, isStorageEnabled } from '../../lib/storage';
 import { createTransaction } from '../transactions/transactions.service';
 import { parseCsv, parseOfx, type ParsedRow } from './parsers';
 import type { confirmSchema, patchItemSchema } from './imports.schemas';
@@ -17,6 +17,10 @@ type ConfirmInput = z.infer<typeof confirmSchema>;
 const batchInclude = {
   items: { orderBy: { date: 'asc' } },
 } satisfies Prisma.ImportBatchInclude;
+
+// O blob do documento (fileData) nunca vai nas respostas — é grande e só serve
+// internamente à extração. Omitido em toda leitura exposta ao cliente.
+const omitFileData = { fileData: true } satisfies Prisma.ImportBatchOmit;
 
 const norm = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
@@ -77,6 +81,7 @@ export async function listBatches(
     },
     orderBy: { createdAt: 'desc' },
     take: q.limit,
+    omit: omitFileData,
     include: { _count: { select: { items: true } } },
   });
   return { items };
@@ -85,6 +90,7 @@ export async function listBatches(
 export async function getBatch(db: PrismaClient, workspaceId: string, id: string) {
   const batch = await db.importBatch.findFirst({
     where: { id, workspaceId, deletedAt: null },
+    omit: omitFileData,
     include: batchInclude,
   });
   if (!batch) throw NotFound('Importação não encontrada');
@@ -101,8 +107,30 @@ interface CreateBatchInput {
 }
 
 /**
- * Cria o lote, roda a extração (IA p/ PDF/imagem; parser p/ CSV/OFX) e grava os
- * itens em PENDING_REVIEW. Em caso de erro, o lote fica FAILED com a mensagem.
+ * Estima o nº de páginas de um PDF sem dependência externa: conta as marcas
+ * `/Type /Page` (e não `/Pages`) no conteúdo. É best-effort — só alimenta a
+ * tela de confirmação ("dados do documento"); devolve null se não der p/ medir.
+ */
+function estimatePdfPageCount(data: Buffer): number | null {
+  try {
+    const text = data.toString('latin1');
+    const matches = text.match(/\/Type\s*\/Page[^s]/g);
+    const n = matches ? matches.length : 0;
+    return n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cria o lote a partir do upload: valida o dono, mede o arquivo (tamanho/páginas)
+ * e guarda os bytes no banco. NÃO roda a IA nem toca o storage — o upload é
+ * leve e responde na hora, com o lote em UPLOADED aguardando o usuário confirmar
+ * a extração (ver `startExtraction`).
+ *
+ * Os bytes ficam no banco (`fileData`) só até a extração, que os relê de lá (ou
+ * do S3, se configurado) — é o que permite extrair em background na fila sem
+ * depender de object storage.
  */
 export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatchInput) {
   if (input.defaultAccountId) await assertAccount(db, ctx.workspaceId, input.defaultAccountId);
@@ -118,51 +146,114 @@ export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatch
       workspaceId: ctx.workspaceId,
       createdById: ctx.userId,
       source: input.source,
-      status: 'PROCESSING',
+      status: 'UPLOADED',
       filename: input.filename,
       mimeType: input.mimeType,
+      // Uint8Array novo: o Buffer do Node (ArrayBufferLike) não casa com o tipo
+      // Bytes do Prisma (Uint8Array<ArrayBuffer>).
+      fileData: new Uint8Array(input.data),
+      fileSize: input.data.length,
+      pageCount: input.source === 'PDF' ? estimatePdfPageCount(input.data) : null,
       model: extractor.modelLabel,
     },
   });
 
-  // Persiste o documento original em storage (best-effort): uma falha aqui não
-  // derruba a importação, que é a função principal. A chave fica no batch p/
-  // auditoria e eventual reprocessamento.
-  if (isStorageEnabled) {
-    try {
-      const key = buildKey({
-        workspaceId: ctx.workspaceId,
-        prefix: 'imports',
-        ownerId: ctx.userId,
-        filename: input.filename,
-      });
-      await putObject({ key, body: input.data, contentType: input.mimeType });
-      await db.importBatch.update({ where: { id: batch.id }, data: { fileKey: key } });
-    } catch {
-      // segue sem persistir o arquivo — não bloqueia a extração
-    }
+  return getBatch(db, ctx.workspaceId, batch.id);
+}
+
+/**
+ * Dispara a extração (leitura com IA) de um lote já enviado.
+ *
+ * Valida que o lote aguarda extração (UPLOADED) ou é reprocessável (FAILED),
+ * marca PROCESSING e:
+ *  - com fila (Redis) e arquivo no storage: enfileira o job (o worker chama
+ *    `processExtractBatch`) e retorna `{ queued: true }`; o front acompanha por
+ *    polling.
+ *  - senão: processa inline (lê o arquivo do storage) e retorna `{ queued: false }`.
+ */
+export async function startExtraction(db: PrismaClient, ctx: Ctx, batchId: string) {
+  const batch = await db.importBatch.findFirst({
+    where: { id: batchId, workspaceId: ctx.workspaceId, deletedAt: null },
+  });
+  if (!batch) throw NotFound('Importação não encontrada');
+  if (batch.status === 'PROCESSING') throw BadRequest('Esta importação já está sendo processada.');
+  if (batch.status !== 'UPLOADED' && batch.status !== 'FAILED') {
+    throw BadRequest('Esta importação não está aguardando extração.');
   }
 
+  await db.importBatch.update({
+    where: { id: batchId },
+    data: { status: 'PROCESSING', error: null },
+  });
+
+  if (queueEnabled) {
+    await enqueueExtractImport({ batchId, workspaceId: ctx.workspaceId, userId: ctx.userId });
+    const result = await getBatch(db, ctx.workspaceId, batchId);
+    return { batch: result, queued: true as const };
+  }
+
+  // Fallback sem fila: processa inline (lê os bytes do banco/storage).
+  await processExtractBatch(db, ctx, batchId);
+  const result = await getBatch(db, ctx.workspaceId, batchId);
+  return { batch: result, queued: false as const };
+}
+
+/**
+ * Faz a extração de fato: relê o documento (do storage, ou do buffer passado no
+ * fluxo inline sem storage), roda a IA (PDF/imagem) ou os parsers (CSV/OFX),
+ * grava os ImportItem e move o lote p/ PENDING_REVIEW.
+ *
+ * Idempotente: limpa os itens anteriores antes de recriar, então reprocessar um
+ * lote (retry do BullMQ ou um FAILED reenviado) não acumula duplicatas. Em erro,
+ * marca FAILED com a mensagem e relança (deixa o BullMQ aplicar o retry).
+ * Executado pelo worker da fila ou inline por `createBatch`/`startExtraction`.
+ */
+export async function processExtractBatch(
+  db: PrismaClient,
+  ctx: Ctx,
+  batchId: string,
+  opts: { data?: Buffer } = {},
+): Promise<void> {
+  const batch = await db.importBatch.findFirst({
+    where: { id: batchId, workspaceId: ctx.workspaceId, deletedAt: null },
+  });
+  if (!batch) throw NotFound('Importação não encontrada');
+
   try {
+    const data =
+      opts.data ??
+      (batch.fileData ? Buffer.from(batch.fileData) : null) ??
+      (batch.fileKey ? await getObject(batch.fileKey) : null);
+    if (!data) throw BadRequest('Documento original indisponível para extração.');
+
+    const settings = await db.workspaceSettings.findUnique({
+      where: { workspaceId: ctx.workspaceId },
+      select: { llmProvider: true, llmModel: true, llmApiKey: true },
+    });
+    const extractor = getExtractor(resolveLlmConfig(settings));
+
     const categories = await loadCategories(db, ctx.workspaceId);
     const categoryNames = categories.map((c) => c.name);
+    const source = batch.source;
+    const mimeType = batch.mimeType ?? 'application/octet-stream';
+    const filename = batch.filename ?? 'documento';
 
     let extracted: ExtractedTransaction[];
     let raw: Prisma.InputJsonValue;
 
-    if (input.source === 'PDF' || input.source === 'IMAGE') {
+    if (source === 'PDF' || source === 'IMAGE') {
       const result = await extractor.extractFromDocument({
-        data: input.data,
-        mimeType: input.mimeType,
-        filename: input.filename,
-        source: input.source,
+        data,
+        mimeType,
+        filename,
+        source,
         categoryNames,
       });
       extracted = result.items;
       raw = result as unknown as Prisma.InputJsonValue;
     } else {
-      const text = input.data.toString('utf8');
-      const rows: ParsedRow[] = input.source === 'CSV' ? parseCsv(text) : parseOfx(text);
+      const text = data.toString('utf8');
+      const rows: ParsedRow[] = source === 'CSV' ? parseCsv(text) : parseOfx(text);
       const suggestions = await extractor.categorizeRows({
         rows: rows.map((r) => ({ description: r.description, type: r.type })),
         categoryNames,
@@ -182,19 +273,20 @@ export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatch
       throw BadRequest('Nenhuma transação foi reconhecida no documento.');
     }
 
+    // Idempotência: reprocessar (retry/FAILED) não acumula itens. Nesta etapa o
+    // lote ainda não tem itens IMPORTED (isso só acontece na confirmação).
+    await db.importItem.deleteMany({ where: { batchId } });
     await db.importItem.createMany({
       data: extracted.map((it) => {
         const d = new Date(it.date);
         return {
-          batchId: batch.id,
+          batchId,
           date: Number.isNaN(d.getTime()) ? new Date() : d,
           description: it.description.slice(0, 200),
           amount: it.amount,
           type: it.type,
           suggestedCategory: it.suggestedCategory ?? null,
           categoryId: matchCategory(categories, it.suggestedCategory),
-          accountId: input.defaultAccountId ?? null,
-          creditCardId: input.defaultCreditCardId ?? null,
           confidence: it.confidence ?? null,
           status: 'PENDING' as const,
         };
@@ -202,19 +294,18 @@ export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatch
     });
 
     await db.importBatch.update({
-      where: { id: batch.id },
-      data: { status: 'PENDING_REVIEW', rawExtraction: raw },
+      where: { id: batchId },
+      // Zera os bytes: já extraídos, não precisam mais ocupar a tabela.
+      data: { status: 'PENDING_REVIEW', rawExtraction: raw, fileData: null },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Falha ao processar o documento';
     await db.importBatch.update({
-      where: { id: batch.id },
+      where: { id: batchId },
       data: { status: 'FAILED', error: message.slice(0, 500) },
     });
     throw err;
   }
-
-  return getBatch(db, ctx.workspaceId, batch.id);
 }
 
 export async function patchItem(
@@ -397,6 +488,7 @@ export async function cancelBatch(db: PrismaClient, workspaceId: string, id: str
   if (!batch) throw NotFound('Importação não encontrada');
   await db.importBatch.update({
     where: { id },
-    data: { status: 'CANCELED', deletedAt: new Date() },
+    // Zera os bytes ao cancelar (caso a extração nunca tenha rodado).
+    data: { status: 'CANCELED', deletedAt: new Date(), fileData: null },
   });
 }

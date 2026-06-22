@@ -809,6 +809,11 @@ model ImportBatch {
   // chave do documento original em object storage (S3/R2); null quando o
   // storage está desligado ou o upload falhou. Usado p/ auditoria/reprocesso.
   fileKey  String?
+  // bytes do documento guardados até a extração (a etapa de IA na fila relê
+  // daqui quando não há object storage); zerado após extrair p/ não inchar a tabela.
+  fileData Bytes?
+  fileSize Int?    // tamanho do arquivo em bytes (exibido na confirmação)
+  pageCount Int?   // nº de páginas estimado (PDFs); null p/ os demais formatos
   model    String? // modelo/provider usado na extração (ex.: "openai:gpt-4o")
 
   // saída crua da extração (resposta do LLM / parser) p/ depuração e auditoria
@@ -861,6 +866,7 @@ enum ImportSource {
 }
 
 enum ImportStatus {
+  UPLOADED // arquivo enviado; aguardando o usuário confirmar a extração com IA
   PROCESSING // extração em andamento
   PENDING_REVIEW // extraído, aguardando revisão do usuário
   IMPORTING // confirmado; criando as transações em background (fila)

@@ -15,6 +15,7 @@ import { env } from '../env';
  */
 
 export const IMPORT_QUEUE_NAME = 'import-confirm';
+export const IMPORT_EXTRACT_QUEUE_NAME = 'import-extract';
 
 /** Dados do job de confirmação de um lote de importação. */
 export interface ConfirmImportJobData {
@@ -25,6 +26,13 @@ export interface ConfirmImportJobData {
   defaultAccountId?: string;
   /** Cartão usado para itens que ficaram sem dono na revisão. */
   defaultCreditCardId?: string;
+}
+
+/** Dados do job de extração (leitura do documento com IA) de um lote. */
+export interface ExtractImportJobData {
+  batchId: string;
+  workspaceId: string;
+  userId: string;
 }
 
 /**
@@ -43,11 +51,23 @@ export function makeQueueConnection(): Redis {
 
 let connection: Redis | null = null;
 let queue: Queue<ConfirmImportJobData> | null = null;
+let extractQueue: Queue<ExtractImportJobData> | null = null;
 
 function getConnection(): Redis {
   if (!connection) connection = makeQueueConnection();
   return connection;
 }
+
+/** Opções padrão compartilhadas pelas filas de importação. */
+const defaultJobOptions = {
+  // Reprocessa em falhas transitórias (ex.: deadlock no banco, timeout do LLM).
+  // O processamento é idempotente: itens já IMPORTED/extraídos são pulados.
+  attempts: 3,
+  backoff: { type: 'exponential' as const, delay: 5_000 },
+  // Higiene do Redis: limpa concluídos e mantém falhas por uma semana.
+  removeOnComplete: { age: 24 * 3600, count: 1000 },
+  removeOnFail: { age: 7 * 24 * 3600 },
+};
 
 /** Fila singleton de confirmação de importação (lado do produtor). */
 export function getImportQueue(): Queue<ConfirmImportJobData> {
@@ -56,18 +76,21 @@ export function getImportQueue(): Queue<ConfirmImportJobData> {
       // Cast: o BullMQ embute uma cópia própria do ioredis (tipo nominalmente
       // distinto da nossa), mas em runtime a instância é compatível.
       connection: getConnection() as unknown as ConnectionOptions,
-      defaultJobOptions: {
-        // Reprocessa em falhas transitórias (ex.: deadlock no banco). O
-        // processamento é idempotente: itens já IMPORTED são pulados.
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5_000 },
-        // Higiene do Redis: limpa concluídos e mantém falhas por uma semana.
-        removeOnComplete: { age: 24 * 3600, count: 1000 },
-        removeOnFail: { age: 7 * 24 * 3600 },
-      },
+      defaultJobOptions,
     });
   }
   return queue;
+}
+
+/** Fila singleton de extração de documento (lado do produtor). */
+export function getExtractQueue(): Queue<ExtractImportJobData> {
+  if (!extractQueue) {
+    extractQueue = new Queue<ExtractImportJobData>(IMPORT_EXTRACT_QUEUE_NAME, {
+      connection: getConnection() as unknown as ConnectionOptions,
+      defaultJobOptions,
+    });
+  }
+  return extractQueue;
 }
 
 /**
@@ -82,11 +105,26 @@ export async function enqueueConfirmImport(data: ConfirmImportJobData): Promise<
   await getImportQueue().add('confirm', data);
 }
 
-/** Fecha a fila e a conexão do produtor (chamado no shutdown). */
+/**
+ * Enfileira a extração (leitura com IA) de um lote.
+ *
+ * Sem jobId fixo de propósito (mesma razão de enqueueConfirmImport): a
+ * duplicidade é barrada antes (o lote vira PROCESSING) e o processamento é
+ * idempotente — reprocessar limpa os itens anteriores antes de recriar.
+ */
+export async function enqueueExtractImport(data: ExtractImportJobData): Promise<void> {
+  await getExtractQueue().add('extract', data);
+}
+
+/** Fecha as filas e a conexão do produtor (chamado no shutdown). */
 export async function closeImportQueue(): Promise<void> {
   if (queue) {
     await queue.close();
     queue = null;
+  }
+  if (extractQueue) {
+    await extractQueue.close();
+    extractQueue = null;
   }
   if (connection) {
     await connection.quit();

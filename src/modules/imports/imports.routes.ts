@@ -10,6 +10,7 @@ import {
   getBatchFileUrl,
   listBatches,
   patchItem,
+  startExtraction,
 } from './imports.service';
 import { confirmSchema, listQuerySchema, patchItemSchema } from './imports.schemas';
 
@@ -58,6 +59,19 @@ export default async function importsRoutes(app: FastifyInstance): Promise<void>
       },
     );
     return reply.code(201).send({ batch });
+  });
+
+  // Confirma o upload e dispara a extração com IA (segunda etapa do fluxo).
+  // Enfileirado (Redis + storage): segue em background e o front acompanha por
+  // polling; senão processa inline.
+  app.post('/:id/extract', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const result = await startExtraction(
+      app.prisma,
+      { workspaceId: request.workspace!.id, userId: request.userId! },
+      id,
+    );
+    return reply.code(result.queued ? 202 : 200).send(result);
   });
 
   app.get('/', async (request) => {
