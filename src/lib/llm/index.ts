@@ -32,6 +32,8 @@ export type {
 export { LLM_PROVIDERS, PROVIDER_LIST, isLlmProvider } from './providers';
 export { listProviderModels } from './models';
 export { dropInstallmentDuplicates } from './parse';
+export { categorizeRowsChunked, extractDocumentChunked } from './chunk';
+export type { ChunkOptions, ChunkedExtractionResult } from './chunk';
 
 /** Campos de LLM vindos das settings do workspace (chave ainda cifrada). */
 export interface WorkspaceLlmSettings {

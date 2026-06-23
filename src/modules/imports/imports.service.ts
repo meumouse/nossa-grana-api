@@ -1,10 +1,16 @@
 import type { ImportSource, Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
-import { queueEnabled } from '../../env';
+import { env, queueEnabled } from '../../env';
 import { BadRequest, NotFound } from '../../lib/errors';
 import { enqueueConfirmImport, enqueueExtractImport } from '../../lib/queue';
 import { randomUUID } from '../../lib/tokens';
-import { getExtractor, resolveLlmConfig, type ExtractedTransaction } from '../../lib/llm';
+import {
+  categorizeRowsChunked,
+  extractDocumentChunked,
+  getExtractor,
+  resolveLlmConfig,
+  type ExtractedTransaction,
+} from '../../lib/llm';
 import { buildKey, getDownloadUrl, getObject, isStorageEnabled, putObject } from '../../lib/storage';
 import { createTransaction } from '../transactions/transactions.service';
 import { parseCsv, parseOfx, type ParsedRow } from './parsers';
@@ -275,22 +281,27 @@ export async function processExtractBatch(
     let raw: Prisma.InputJsonValue;
 
     if (source === 'PDF' || source === 'IMAGE') {
-      const result = await extractor.extractFromDocument({
-        data,
-        mimeType,
-        filename,
-        source,
-        categoryNames,
-      });
+      // Fraciona PDFs grandes em chunks de páginas (melhora a leitura e evita
+      // truncar a resposta); imagens/PDFs pequenos seguem em chamada única.
+      const result = await extractDocumentChunked(
+        extractor,
+        { data, mimeType, filename, source, categoryNames },
+        { pdfChunkPages: env.LLM_PDF_CHUNK_PAGES, concurrency: env.LLM_CHUNK_CONCURRENCY },
+      );
       extracted = result.items;
       raw = result as unknown as Prisma.InputJsonValue;
     } else {
       const text = data.toString('utf8');
       const rows: ParsedRow[] = source === 'CSV' ? parseCsv(text) : parseOfx(text);
-      const suggestions = await extractor.categorizeRows({
-        rows: rows.map((r) => ({ description: r.description, type: r.type })),
-        categoryNames,
-      });
+      const suggestions = await categorizeRowsChunked(
+        extractor,
+        {
+          rows: rows.map((r) => ({ description: r.description, type: r.type })),
+          categoryNames,
+        },
+        env.LLM_CSV_CHUNK_ROWS,
+        env.LLM_CHUNK_CONCURRENCY,
+      );
       extracted = rows.map((r, i) => ({
         date: r.date.toISOString().slice(0, 10),
         description: r.description,

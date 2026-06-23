@@ -73,6 +73,14 @@ const schema = z.object({
   // (muitas transações) → resposta cortada e falha de parse. 8192 cobre a maioria
   // dos documentos; aumente (ex.: 16384/32768 nos modelos gpt-4.1) p/ docs grandes.
   LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
+  // Fracionamento de PDFs grandes: páginas por chunk enviado à IA. Documentos
+  // grandes em uma única chamada são lidos com menos precisão (e a resposta pode
+  // truncar); quebrar por páginas melhora a leitura. 0 = desliga (chamada única).
+  LLM_PDF_CHUNK_PAGES: z.coerce.number().int().min(0).default(4),
+  // Chunks processados em paralelo (cuidado com rate limit do provider).
+  LLM_CHUNK_CONCURRENCY: z.coerce.number().int().positive().default(3),
+  // Categorização de CSV/OFX: linhas por lote enviado à IA. 0 = sem fracionar.
+  LLM_CSV_CHUNK_ROWS: z.coerce.number().int().min(0).default(200),
   // Chaves de API por provider (fallback global; o workspace pode definir a sua).
   OPENAI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
