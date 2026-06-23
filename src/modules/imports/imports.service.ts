@@ -222,7 +222,8 @@ export async function startExtraction(db: PrismaClient, ctx: Ctx, batchId: strin
 
   await db.importBatch.update({
     where: { id: batchId },
-    data: { status: 'PROCESSING', error: null },
+    // Zera o progresso de chunks de uma execução anterior (retry de um FAILED).
+    data: { status: 'PROCESSING', error: null, chunkDone: null, chunkTotal: null },
   });
 
   if (queueEnabled) {
@@ -258,6 +259,17 @@ export async function processExtractBatch(
   });
   if (!batch) throw NotFound('Importação não encontrada');
 
+  // Reporta progresso do fracionamento gravando no lote (o front lê por polling).
+  // Fire-and-forget e monotônico: não bloqueia a extração nem regride o contador.
+  let lastDone = 0;
+  const onProgress = (done: number, total: number) => {
+    if (done < lastDone) return;
+    lastDone = done;
+    void db.importBatch
+      .update({ where: { id: batchId }, data: { chunkDone: done, chunkTotal: total } })
+      .catch(() => {});
+  };
+
   try {
     const data =
       opts.data ??
@@ -286,7 +298,7 @@ export async function processExtractBatch(
       const result = await extractDocumentChunked(
         extractor,
         { data, mimeType, filename, source, categoryNames },
-        { pdfChunkPages: env.LLM_PDF_CHUNK_PAGES, concurrency: env.LLM_CHUNK_CONCURRENCY },
+        { pdfChunkPages: env.LLM_PDF_CHUNK_PAGES, concurrency: env.LLM_CHUNK_CONCURRENCY, onProgress },
       );
       extracted = result.items;
       raw = result as unknown as Prisma.InputJsonValue;
@@ -301,6 +313,7 @@ export async function processExtractBatch(
         },
         env.LLM_CSV_CHUNK_ROWS,
         env.LLM_CHUNK_CONCURRENCY,
+        onProgress,
       );
       extracted = rows.map((r, i) => ({
         date: r.date.toISOString().slice(0, 10),
@@ -339,14 +352,20 @@ export async function processExtractBatch(
 
     await db.importBatch.update({
       where: { id: batchId },
-      // Zera os bytes: já extraídos, não precisam mais ocupar a tabela.
-      data: { status: 'PENDING_REVIEW', rawExtraction: raw, fileData: null },
+      // Zera os bytes (já extraídos) e o progresso de chunks (extração concluída).
+      data: {
+        status: 'PENDING_REVIEW',
+        rawExtraction: raw,
+        fileData: null,
+        chunkDone: null,
+        chunkTotal: null,
+      },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Falha ao processar o documento';
     await db.importBatch.update({
       where: { id: batchId },
-      data: { status: 'FAILED', error: message.slice(0, 500) },
+      data: { status: 'FAILED', error: message.slice(0, 500), chunkDone: null, chunkTotal: null },
     });
     throw err;
   }

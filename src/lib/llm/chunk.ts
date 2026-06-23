@@ -7,6 +7,8 @@ export interface ChunkOptions {
   pdfChunkPages: number;
   /** Chunks processados em paralelo. */
   concurrency: number;
+  /** Reporta progresso (chunks concluídos / total) — só chamado quando fraciona. */
+  onProgress?: (done: number, total: number) => void;
 }
 
 export interface ChunkedExtractionResult extends ExtractionResult {
@@ -56,9 +58,15 @@ export async function extractDocumentChunked(
     return { ...single, chunkCount: 1 };
   }
 
-  const results = await mapPool(chunks, opts.concurrency, (data) =>
-    extractor.extractFromDocument({ ...input, data }),
-  );
+  opts.onProgress?.(0, chunks.length);
+  let done = 0;
+  const results = await mapPool(chunks, opts.concurrency, async (data) => {
+    const r = await extractor.extractFromDocument({ ...input, data });
+    // JS é single-thread: o incremento é seguro mesmo com o pool concorrente.
+    done += 1;
+    opts.onProgress?.(done, chunks.length);
+    return r;
+  });
 
   const items = results.flatMap((r) => r.items);
   const detectedCurrency = results.find((r) => r.detectedCurrency)?.detectedCurrency ?? null;
@@ -76,6 +84,7 @@ export async function categorizeRowsChunked(
   input: CategorizeInput,
   chunkRows: number,
   concurrency: number,
+  onProgress?: (done: number, total: number) => void,
 ): Promise<(string | null)[]> {
   if (chunkRows <= 0 || input.rows.length <= chunkRows) {
     return extractor.categorizeRows(input);
@@ -85,8 +94,13 @@ export async function categorizeRowsChunked(
   for (let i = 0; i < input.rows.length; i += chunkRows) {
     batches.push(input.rows.slice(i, i + chunkRows));
   }
-  const results = await mapPool(batches, concurrency, (rows) =>
-    extractor.categorizeRows({ rows, categoryNames: input.categoryNames }),
-  );
+  onProgress?.(0, batches.length);
+  let done = 0;
+  const results = await mapPool(batches, concurrency, async (rows) => {
+    const r = await extractor.categorizeRows({ rows, categoryNames: input.categoryNames });
+    done += 1;
+    onProgress?.(done, batches.length);
+    return r;
+  });
   return results.flat();
 }

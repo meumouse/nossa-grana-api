@@ -822,6 +822,11 @@ model ImportBatch {
   pageCount Int?   // nº de páginas estimado (PDFs); null p/ os demais formatos
   model    String? // modelo/provider usado na extração (ex.: "openai:gpt-4o")
 
+  // Progresso do fracionamento durante a extração (docs grandes lidos em chunks):
+  // total de pedaços e quantos já foram lidos. null quando não fraciona (1 chamada).
+  chunkTotal Int?
+  chunkDone  Int?
+
   // saída crua da extração (resposta do LLM / parser) p/ depuração e auditoria
   rawExtraction Json?
   error         String? // mensagem caso a extração falhe
