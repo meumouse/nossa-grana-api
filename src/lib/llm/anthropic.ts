@@ -70,6 +70,13 @@ export class AnthropicExtractor implements DocumentExtractor {
         messages: [{ role: 'user', content: userContent }],
       })
       .catch((err) => rethrowLlmError(err, 'Anthropic'));
+    // Resposta cortada por limite de tokens: o input do tool_use vem incompleto
+    // (JSON parcial) e a coerção descartaria itens silenciosamente. Falha clara.
+    if (message.stop_reason === 'max_tokens') {
+      throw BadRequest(
+        'O documento tem transações demais para extrair de uma vez (resposta da IA truncada). Aumente LLM_MAX_OUTPUT_TOKENS ou divida o arquivo em períodos menores.',
+      );
+    }
     const block = message.content.find((b) => b.type === 'tool_use');
     return block && block.type === 'tool_use' ? block.input : null;
   }

@@ -69,7 +69,10 @@ const schema = z.object({
   LLM_PROVIDER: z.enum(['openai', 'anthropic', 'google']).default('openai'),
   // Modelo default p/ o provider de env; precisa suportar visão (imagem/PDF).
   LLM_MODEL: z.string().default('gpt-4o'),
-  LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
+  // Saída máxima do modelo. 4096 trunca o JSON em extratos/faturas pesados
+  // (muitas transações) → resposta cortada e falha de parse. 8192 cobre a maioria
+  // dos documentos; aumente (ex.: 16384/32768 nos modelos gpt-4.1) p/ docs grandes.
+  LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8192),
   // Chaves de API por provider (fallback global; o workspace pode definir a sua).
   OPENAI_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),

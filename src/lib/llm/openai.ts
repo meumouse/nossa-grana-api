@@ -84,7 +84,15 @@ export class OpenAIExtractor implements DocumentExtractor {
       })
       .catch((err) => rethrowLlmError(err, 'OpenAI'));
 
-    const content = completion.choices[0]?.message?.content;
+    const choice = completion.choices[0];
+    // Resposta cortada por limite de tokens: o JSON vem incompleto e o parse
+    // quebraria com um erro opaco. Mensagem acionável em vez disso.
+    if (choice?.finish_reason === 'length') {
+      throw BadRequest(
+        'O documento tem transações demais para extrair de uma vez (resposta da IA truncada). Aumente LLM_MAX_OUTPUT_TOKENS ou divida o arquivo em períodos menores.',
+      );
+    }
+    const content = choice?.message?.content;
     if (!content) throw BadRequest('A IA não retornou conteúdo para o documento.');
     return coerceExtraction(JSON.parse(content));
   }
