@@ -5,6 +5,7 @@ import { requireRole } from '../../plugins/workspace';
 import { createRecurring } from './recurring.service';
 import { suggestRecurring } from './recurring.detect';
 import { startOfDayUTC } from '../../lib/dates';
+import { validWorkspaceTagIds } from '../../lib/tags';
 
 const baseSchema = z.object({
   clientId: z.string().uuid().optional(),
@@ -19,6 +20,8 @@ const baseSchema = z.object({
   startDate: z.coerce.date(),
   endDate: z.coerce.date().nullable().optional(),
   autoConfirm: z.boolean().optional(),
+  // Tags (ids do servidor) aplicadas ao template e propagadas às ocorrências.
+  tagIds: z.array(z.string()).optional(),
 });
 
 // Criação aceita também ids de transações já existentes da série, p/ vincular
@@ -31,7 +34,10 @@ export default async function recurringRoutes(app: FastifyInstance): Promise<voi
   app.get('/', async (request) => {
     const items = await app.prisma.recurringTransaction.findMany({
       where: { workspaceId: request.workspace!.id, deletedAt: null },
-      include: { category: { select: { id: true, name: true, color: true, icon: true } } },
+      include: {
+        category: { select: { id: true, name: true, color: true, icon: true } },
+        tags: { select: { id: true, name: true, color: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return { items };
@@ -57,7 +63,17 @@ export default async function recurringRoutes(app: FastifyInstance): Promise<voi
     });
     if (!existing) throw NotFound('Recorrência não encontrada');
     const body = baseSchema.partial().extend({ isActive: z.boolean().optional() }).parse(request.body);
-    const rec = await app.prisma.recurringTransaction.update({ where: { id }, data: body });
+    const { tagIds, ...fields } = body;
+    // tagIds não é coluna: vira um "set" da relação N:N (ignorando ids órfãos).
+    let tagsData: { tags?: { set: { id: string }[] } } = {};
+    if (tagIds !== undefined) {
+      const valid = await validWorkspaceTagIds(app.prisma, request.workspace!.id, tagIds);
+      tagsData = { tags: { set: valid.map((tid) => ({ id: tid })) } };
+    }
+    const rec = await app.prisma.recurringTransaction.update({
+      where: { id },
+      data: { ...fields, ...tagsData },
+    });
     return { recurring: rec };
   });
 

@@ -1,5 +1,21 @@
 # Changelog
 
+Versão 1.2.0 (23/06/2026)
+* Novidades:
+    - Etiquetas (tags) em recorrências e parcelamentos: o template/plano guarda as etiquetas e as propaga a cada ocorrência/parcela materializada (inclusive ao regenerar parcelas e ao estender o horizonte de recorrências)
+* Requer `npx prisma db push` (novas relações N:N `RecurringTransaction`↔`Tag` e `InstallmentPlan`↔`Tag`)
+
+Versão 1.1.0 (23/06/2026)
+* Novidades:
+    - Etiquetas (tags) nos lançamentos: catálogo padrão criado por workspace, filtro por etiqueta e sincronização offline das etiquetas
+    - Observações (comentários) nos lançamentos
+    - Documentos grandes divididos em partes para leitura por IA (PDFs por intervalo de páginas; CSV/OFX por linhas), com acompanhamento do progresso parte a parte
+    - Nova área de documentos: envio, listagem, download seguro, exclusão e reimportação por IA, com os arquivos vinculados às importações e guardados no S3
+    - Instituições personalizadas: envio de logo, edição e exclusão das criadas pelo usuário
+* Melhorias:
+    - Cache da extração por IA por 7 dias (por conteúdo + provedor/modelo): reprocessar o mesmo documento reaproveita o resultado sem gastar tokens de novo
+    - Confirmação da importação em uma única requisição, evitando o estouro do limite de taxa em lotes grandes (ex.: 600 lançamentos)
+
 Versão 1.0.0 (22/06/2026)
 * Novidades:
     - Importação de documentos por IA processada em segundo plano (fila), suportando arquivos grandes (PDFs com muitas páginas) sem travar o envio

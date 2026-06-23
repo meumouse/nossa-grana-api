@@ -7,6 +7,7 @@ import { addMonths } from '../../lib/dates';
 import { Decimal } from '../../lib/money';
 import { txShareSchema } from '../sync/sync.schemas';
 import { ensureInvoicesForDates, pruneEmptyOpenInvoices } from '../invoices/invoices.service';
+import { connectTagsToTransactions, validWorkspaceTagIds } from '../../lib/tags';
 
 /** Dados de ciclo do cartão dono do parcelamento (null se for conta). */
 type OwnerCard = {
@@ -36,6 +37,8 @@ const createSchema = z
     // = sem divisão. shareCount default = nº de participantes informados.
     shares: z.array(txShareSchema).max(100).nullable().optional(),
     shareCount: z.number().int().min(1).nullable().optional(),
+    // Tags (ids do servidor) aplicadas ao plano e propagadas a cada parcela.
+    tagIds: z.array(z.string()).optional(),
   })
   .refine((b) => b.startInstallment <= b.installments, {
     message: 'A parcela inicial não pode ser maior que o total de parcelas',
@@ -159,7 +162,10 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
   app.get('/', async (request) => {
     const items = await app.prisma.installmentPlan.findMany({
       where: { workspaceId: request.workspace!.id, deletedAt: null },
-      include: { _count: { select: { transactions: true } } },
+      include: {
+        _count: { select: { transactions: true } },
+        tags: { select: { id: true, name: true, color: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     return { items };
@@ -169,7 +175,10 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
     const { id } = request.params as { id: string };
     const plan = await app.prisma.installmentPlan.findFirst({
       where: { id, workspaceId: request.workspace!.id, deletedAt: null },
-      include: { transactions: { where: { deletedAt: null }, orderBy: { installmentNumber: 'asc' } } },
+      include: {
+        transactions: { where: { deletedAt: null }, orderBy: { installmentNumber: 'asc' } },
+        tags: { select: { id: true, name: true, color: true } },
+      },
     });
     if (!plan) throw NotFound('Parcelamento não encontrado');
     return { plan };
@@ -180,6 +189,8 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
     const body = createSchema.parse(request.body);
 
     const card = await assertOwner(app, request.workspace!.id, body);
+
+    const validTagIds = await validWorkspaceTagIds(app.prisma, request.workspace!.id, body.tagIds);
 
     const amounts = splitAmount(new Decimal(body.totalAmount), body.installments);
 
@@ -233,6 +244,24 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
         }),
       });
 
+      // Vincula as tags ao plano e propaga a cada parcela (createMany não grava
+      // relação N:N — então buscamos as parcelas recém-criadas e conectamos).
+      if (validTagIds.length > 0) {
+        await tx.installmentPlan.update({
+          where: { id: created.id },
+          data: { tags: { connect: validTagIds.map((tid) => ({ id: tid })) } },
+        });
+        const parcelas = await tx.transaction.findMany({
+          where: { installmentPlanId: created.id, deletedAt: null },
+          select: { id: true },
+        });
+        await connectTagsToTransactions(
+          tx,
+          validTagIds,
+          parcelas.map((p) => p.id),
+        );
+      }
+
       return created;
     });
 
@@ -253,6 +282,8 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
     if (!existing) throw NotFound('Parcelamento não encontrado');
 
     const card = await assertOwner(app, request.workspace!.id, body);
+
+    const validTagIds = await validWorkspaceTagIds(app.prisma, request.workspace!.id, body.tagIds);
 
     // Cartão antigo das parcelas atuais (pode mudar nesta edição) — usado p/
     // limpar faturas que ficarem vazias após a regeneração.
@@ -279,6 +310,10 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
           shared,
           shareCount,
           shares: shared ? (shares as Prisma.InputJsonValue) : Prisma.DbNull,
+          // tagIds ausente = não mexe; presente (mesmo vazio) = redefine o conjunto.
+          ...(body.tagIds !== undefined
+            ? { tags: { set: validTagIds.map((tid) => ({ id: tid })) } }
+            : {}),
         },
       });
 
@@ -310,6 +345,19 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
           invoiceByDue,
         }),
       });
+
+      // Reaplica as tags do plano às parcelas regeradas.
+      if (validTagIds.length > 0) {
+        const parcelas = await tx.transaction.findMany({
+          where: { installmentPlanId: id, deletedAt: null },
+          select: { id: true },
+        });
+        await connectTagsToTransactions(
+          tx,
+          validTagIds,
+          parcelas.map((p) => p.id),
+        );
+      }
 
       // Faturas que ficaram sem lançamento (cartão removido/trocado/menos parcelas).
       const wsId = request.workspace!.id;

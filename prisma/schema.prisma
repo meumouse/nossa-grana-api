@@ -438,7 +438,9 @@ model Tag {
   name        String
   color       String?
 
-  transactions Transaction[] @relation("TransactionTags")
+  transactions          Transaction[]          @relation("TransactionTags")
+  recurringTransactions RecurringTransaction[] @relation("RecurringTags")
+  installmentPlans      InstallmentPlan[]      @relation("InstallmentTags")
 
   @@unique([workspaceId, name])
 }
@@ -615,6 +617,9 @@ model InstallmentPlan {
   shareCount Int?
   shares     Json?
 
+  // Tags aplicadas ao parcelamento — propagadas a cada parcela gerada.
+  tags Tag[] @relation("InstallmentTags")
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -650,6 +655,9 @@ model RecurringTransaction {
   materializedUntil DateTime?
   isActive          Boolean             @default(true)
   autoConfirm       Boolean             @default(false) // efetiva sozinho na data?
+
+  // Tags do template — propagadas a cada ocorrência materializada.
+  tags Tag[] @relation("RecurringTags")
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt

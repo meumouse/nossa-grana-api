@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient, RecurrenceFrequency } from '@prisma/client';
 import { addMonths, startOfDayUTC } from '../../lib/dates';
 import { occurrencesBetween } from '../../lib/recurrence';
+import { connectTagsToTransactions, validWorkspaceTagIds } from '../../lib/tags';
 
 /** Horizonte de materialização (meses à frente) do workspace, com default. */
 async function forecastUntil(db: PrismaClient, workspaceId: string): Promise<Date> {
@@ -28,6 +29,8 @@ export interface CreateRecurringInput {
    * assim nenhuma ocorrência PENDING nasce sobre um período já lançado.
    */
   linkTransactionIds?: string[];
+  /** Ids de tags (do servidor) aplicadas ao template e a cada ocorrência gerada. */
+  tagIds?: string[];
 }
 
 /**
@@ -43,7 +46,9 @@ export async function createRecurring(
   workspaceId: string,
   input: CreateRecurringInput,
 ) {
-  const { linkTransactionIds, ...fields } = input;
+  const { linkTransactionIds, tagIds, ...fields } = input;
+
+  const validTagIds = await validWorkspaceTagIds(db, workspaceId, tagIds);
 
   let linkIds: string[] = [];
   let materializedUntil: Date | null = null;
@@ -73,11 +78,22 @@ export async function createRecurring(
   };
   const rec = await db.recurringTransaction.create({ data });
 
+  // Vincula as tags ao template (relação N:N não vai no UncheckedCreateInput).
+  // Feito ANTES de materializar para que as ocorrências já nasçam etiquetadas.
+  if (validTagIds.length > 0) {
+    await db.recurringTransaction.update({
+      where: { id: rec.id },
+      data: { tags: { connect: validTagIds.map((id) => ({ id })) } },
+    });
+  }
+
   if (linkIds.length > 0) {
     await db.transaction.updateMany({
       where: { id: { in: linkIds }, workspaceId },
       data: { recurringTransactionId: rec.id },
     });
+    // Propaga as tags do template às transações já existentes da série.
+    await connectTagsToTransactions(db, validTagIds, linkIds);
   }
 
   await materializeOne(db, rec.id, await forecastUntil(db, workspaceId));
@@ -97,6 +113,7 @@ export async function materializeOne(
 ): Promise<number> {
   const rec = await db.recurringTransaction.findFirst({
     where: { id: recurringId, isActive: true, deletedAt: null },
+    include: { tags: { select: { id: true } } },
   });
   if (!rec) return 0;
 
@@ -122,9 +139,10 @@ export async function materializeOne(
   }
 
   const today = startOfDayUTC(new Date());
+  const tagIds = rec.tags.map((t) => t.id);
 
-  await db.$transaction([
-    db.transaction.createMany({
+  await db.$transaction(async (tx) => {
+    await tx.transaction.createMany({
       data: dates.map((date) => {
         const autoDone = rec.autoConfirm && date <= today;
         return {
@@ -141,12 +159,25 @@ export async function materializeOne(
           recurringTransactionId: rec.id,
         };
       }),
-    }),
-    db.recurringTransaction.update({
+    });
+    await tx.recurringTransaction.update({
       where: { id: rec.id },
       data: { materializedUntil: until },
-    }),
-  ]);
+    });
+    // Propaga as tags do template às ocorrências recém-criadas (createMany não
+    // grava relações N:N). Limita às datas deste lote para não revisitar tudo.
+    if (tagIds.length > 0) {
+      const created = await tx.transaction.findMany({
+        where: { recurringTransactionId: rec.id, date: { in: dates }, deletedAt: null },
+        select: { id: true },
+      });
+      await connectTagsToTransactions(
+        tx,
+        tagIds,
+        created.map((c) => c.id),
+      );
+    }
+  });
 
   return dates.length;
 }
