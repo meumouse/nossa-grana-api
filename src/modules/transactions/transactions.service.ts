@@ -65,6 +65,7 @@ export async function listTransactions(db: PrismaClient, workspaceId: string, q:
       ? { date: { ...(q.from ? { gte: q.from } : {}), ...(q.to ? { lte: q.to } : {}) } }
       : {}),
     ...(q.search ? { description: { contains: q.search, mode: 'insensitive' } } : {}),
+    ...(q.tagIds && q.tagIds.length > 0 ? { tags: { some: { id: { in: q.tagIds } } } } : {}),
   };
 
   const items = await db.transaction.findMany({

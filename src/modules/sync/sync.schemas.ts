@@ -76,6 +76,8 @@ const transactionData = z.object({
   shared: z.boolean().optional(),
   shareCount: z.number().int().min(1).nullable().optional(),
   shares: z.array(txShareSchema).nullable().optional(),
+  // Tags vinculadas (ids do servidor — tags são geridas online). Ausente = não mexe.
+  tagIds: z.array(z.string()).optional(),
 });
 
 const change = <T extends z.ZodTypeAny>(data: T) =>

@@ -152,17 +152,44 @@ export async function push(
       // JSON do Prisma: null vira DbNull (limpa a coluna); array é gravado como tal.
       shares: c.data.shares == null ? Prisma.DbNull : (c.data.shares as Prisma.InputJsonValue),
     };
+
+    // Tags (ids do servidor): redefine o conjunto vinculado. Ausente = não mexe.
+    // Filtra para as tags que pertencem ao workspace — inválidas são ignoradas
+    // (não deixa o lote de sync quebrar por uma tag órfã). `undefined` = sem
+    // alteração; array vazio = limpa as tags.
+    let validTagIds: Array<{ id: string }> | undefined;
+    if (c.data.tagIds !== undefined) {
+      validTagIds =
+        c.data.tagIds.length > 0
+          ? await db.tag.findMany({
+              where: { id: { in: c.data.tagIds }, workspaceId },
+              select: { id: true },
+            })
+          : [];
+    }
+
     let rec: { id: string };
     if (existing) {
       // Backfilla o clientId quando o registro nasceu no servidor (era null).
       rec = await db.transaction.update({
         where: { id: existing.id },
-        data: { ...data, deletedAt: null, ...(existing.clientId ? {} : { clientId: c.clientId }) },
+        data: {
+          ...data,
+          deletedAt: null,
+          ...(existing.clientId ? {} : { clientId: c.clientId }),
+          ...(validTagIds ? { tags: { set: validTagIds } } : {}),
+        },
         select: { id: true },
       });
     } else {
       rec = await db.transaction.create({
-        data: { ...data, clientId: c.clientId, workspaceId, createdById: userId },
+        data: {
+          ...data,
+          clientId: c.clientId,
+          workspaceId,
+          createdById: userId,
+          ...(validTagIds ? { tags: { connect: validTagIds } } : {}),
+        },
         select: { id: true },
       });
     }

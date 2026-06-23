@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { createDefaultCategories } from '../../lib/defaults';
+import { createDefaultCategories, createDefaultTags } from '../../lib/defaults';
 
 const createSchema = z.object({
   name: z.string().min(1).max(120),
@@ -50,6 +50,7 @@ export default async function workspacesTopRoutes(app: FastifyInstance): Promise
         },
       });
       await createDefaultCategories(tx, ws.id);
+      await createDefaultTags(tx, ws.id);
       return ws;
     });
 

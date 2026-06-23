@@ -82,6 +82,14 @@ export const listQuerySchema = z.object({
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   search: z.string().optional(),
+  // Filtro por tag (OR). Aceita repetição (?tagIds=a&tagIds=b) ou CSV (?tagIds=a,b).
+  tagIds: z
+    .preprocess((v) => {
+      if (v == null) return undefined;
+      const arr = Array.isArray(v) ? v : String(v).split(',');
+      return arr.map((s) => String(s).trim()).filter(Boolean);
+    }, z.array(z.string()))
+    .optional(),
   cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });

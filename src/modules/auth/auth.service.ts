@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { BadRequest, Unauthorized } from '../../lib/errors';
 import { hashPassword, verifyPassword } from '../../lib/password';
-import { createDefaultCategories } from '../../lib/defaults';
+import { createDefaultCategories, createDefaultTags } from '../../lib/defaults';
 
 export interface PublicUser {
   id: string;
@@ -59,6 +59,7 @@ export async function provisionUserWorkspace(
   });
 
   await createDefaultCategories(tx, workspace.id);
+  await createDefaultTags(tx, workspace.id);
 
   await tx.userPreferences.create({
     data: { userId, defaultWorkspaceId: workspace.id },

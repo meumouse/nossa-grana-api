@@ -39,3 +39,43 @@ export async function createDefaultCategories(db: Db, workspaceId: string): Prom
     data: DEFAULT_CATEGORIES.map((c, i) => ({ ...c, workspaceId, sortOrder: i })),
   });
 }
+
+/** Catálogo de tags comuns criado junto com um novo workspace. */
+const DEFAULT_TAGS: Array<{ name: string; color: string }> = [
+  { name: 'Viagem', color: '#0ea5e9' },
+  { name: 'Trabalho', color: '#6366f1' },
+  { name: 'Reembolso', color: '#14b8a6' },
+  { name: 'Pix', color: '#10b981' },
+  { name: 'Assinatura', color: '#f97316' },
+  { name: 'Presente', color: '#ec4899' },
+  { name: 'Saúde', color: '#06b6d4' },
+  { name: 'Pet', color: '#eab308' },
+  { name: 'Família', color: '#8b5cf6' },
+  { name: 'Emergência', color: '#ef4444' },
+];
+
+export async function createDefaultTags(db: Db, workspaceId: string): Promise<void> {
+  await db.tag.createMany({
+    data: DEFAULT_TAGS.map((t) => ({ ...t, workspaceId })),
+    // Idempotente: se a tag (workspaceId+name) já existe, ignora — assim o
+    // backfill no boot pode rodar sem quebrar por conflito de unique.
+    skipDuplicates: true,
+  });
+}
+
+/**
+ * Semeia o catálogo de tags padrão nos workspaces que ainda NÃO têm nenhuma tag
+ * (contas criadas antes da feature). Idempotente: workspaces que já têm qualquer
+ * tag são ignorados — não re-cria o que o usuário pode ter renomeado/excluído.
+ * Roda no boot da API (deploy) — best-effort. Devolve quantos foram semeados.
+ */
+export async function backfillDefaultTags(db: PrismaClient): Promise<number> {
+  const targets = await db.workspace.findMany({
+    where: { deletedAt: null, tags: { none: {} } },
+    select: { id: true },
+  });
+  for (const ws of targets) {
+    await createDefaultTags(db, ws.id);
+  }
+  return targets.length;
+}

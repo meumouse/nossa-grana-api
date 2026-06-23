@@ -5,9 +5,19 @@ import { startScheduler } from './jobs/scheduler';
 import { startImportWorker } from './jobs/import-worker';
 import { closeImportQueue } from './lib/queue';
 import { closeSharedCache } from './lib/cache';
+import { backfillDefaultTags } from './lib/defaults';
 
 async function main(): Promise<void> {
   const app = await buildServer();
+
+  // Backfill idempotente: semeia tags padrão nos workspaces que ainda não têm
+  // nenhuma (contas anteriores à feature). Best-effort — não bloqueia o boot.
+  try {
+    const seeded = await backfillDefaultTags(app.prisma);
+    if (seeded > 0) app.log.info(`Backfill de tags padrão: ${seeded} workspace(s) semeados`);
+  } catch (err) {
+    app.log.error({ err }, 'Falha no backfill de tags padrão (ignorado)');
+  }
 
   // Jobs in-process (materializar recorrências + fechar faturas).
   const stopScheduler = startScheduler(app);
