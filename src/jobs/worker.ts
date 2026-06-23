@@ -3,6 +3,7 @@ import pino from 'pino';
 import { env, queueEnabled } from '../env';
 import { prisma } from '../prisma';
 import { closeImportQueue } from '../lib/queue';
+import { closeSharedCache } from '../lib/cache';
 import { startImportWorker } from './import-worker';
 
 /**
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
     log.info(`Recebido ${signal}, encerrando worker...`);
     await stopWorker();
     await closeImportQueue();
+    await closeSharedCache();
     await prisma.$disconnect();
     process.exit(0);
   };

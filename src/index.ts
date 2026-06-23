@@ -4,6 +4,7 @@ import { env, queueEnabled } from './env';
 import { startScheduler } from './jobs/scheduler';
 import { startImportWorker } from './jobs/import-worker';
 import { closeImportQueue } from './lib/queue';
+import { closeSharedCache } from './lib/cache';
 
 async function main(): Promise<void> {
   const app = await buildServer();
@@ -20,6 +21,7 @@ async function main(): Promise<void> {
     stopScheduler();
     if (stopWorker) await stopWorker();
     await closeImportQueue();
+    await closeSharedCache();
     await app.close();
     process.exit(0);
   };

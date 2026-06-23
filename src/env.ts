@@ -32,6 +32,11 @@ const schema = z.object({
   CACHE_TTL_MEMBER_SECONDS: z.coerce.number().int().positive().default(30),
   // TTL (s) do catálogo de instituições (dado quase estático).
   CACHE_TTL_INSTITUTIONS_SECONDS: z.coerce.number().int().positive().default(300),
+  // TTL (s) do cache da extração com IA por documento (hash do conteúdo +
+  // provider/modelo). 7 dias: reaproveita o processamento de um documento já
+  // lido — mesmo que o lote seja descartado/cancelado ou o doc seja reenviado —
+  // sem repagar tokens. Best-effort (persiste de verdade só com Redis).
+  EXTRACTION_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(7 * 24 * 3600),
 
   JWT_ACCESS_SECRET: z.string().min(24),
   JWT_REFRESH_SECRET: z.string().min(24),

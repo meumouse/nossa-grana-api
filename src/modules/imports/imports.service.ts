@@ -12,6 +12,8 @@ import {
   type ExtractedTransaction,
 } from '../../lib/llm';
 import { buildKey, getDownloadUrl, getObject, isStorageEnabled, putObject } from '../../lib/storage';
+import { extractionCacheKey, getSharedCache } from '../../lib/cache';
+import { createHash } from 'node:crypto';
 import { createTransaction } from '../transactions/transactions.service';
 import { parseCsv, parseOfx, type ParsedRow } from './parsers';
 import type { confirmSchema, patchItemSchema } from './imports.schemas';
@@ -19,6 +21,9 @@ import type { confirmSchema, patchItemSchema } from './imports.schemas';
 type Ctx = { workspaceId: string; userId: string };
 type PatchInput = z.infer<typeof patchItemSchema>;
 type ConfirmInput = z.infer<typeof confirmSchema>;
+
+/** Payload cacheado da extração de um documento (ver `extractionCacheKey`). */
+type CachedExtraction = { extracted: ExtractedTransaction[]; raw: Prisma.InputJsonValue };
 
 const batchInclude = {
   items: { orderBy: { date: 'asc' } },
@@ -281,7 +286,8 @@ export async function processExtractBatch(
       where: { workspaceId: ctx.workspaceId },
       select: { llmProvider: true, llmModel: true, llmApiKey: true },
     });
-    const extractor = getExtractor(resolveLlmConfig(settings));
+    const llmConfig = resolveLlmConfig(settings);
+    const extractor = getExtractor(llmConfig);
 
     const categories = await loadCategories(db, ctx.workspaceId);
     const categoryNames = categories.map((c) => c.name);
@@ -289,10 +295,32 @@ export async function processExtractBatch(
     const mimeType = batch.mimeType ?? 'application/octet-stream';
     const filename = batch.filename ?? 'documento';
 
+    // Cache da extração: o resultado da IA é guardado por hash do conteúdo +
+    // provider/modelo. Reprocessar o MESMO documento (reenvio, retry, ou um doc
+    // lido mas nunca importado cujo lote foi descartado) dentro do TTL reusa o
+    // resultado sem repagar tokens. Best-effort — qualquer falha do cache vira
+    // miss e a extração roda normalmente.
+    const cache = await getSharedCache();
+    const contentHash = createHash('sha256').update(data).digest('hex');
+    const cacheKey = extractionCacheKey(
+      ctx.workspaceId,
+      llmConfig.provider,
+      llmConfig.model,
+      contentHash,
+    );
+    const cached = await cache.get<CachedExtraction>(cacheKey);
+
     let extracted: ExtractedTransaction[];
     let raw: Prisma.InputJsonValue;
 
-    if (source === 'PDF' || source === 'IMAGE') {
+    if (cached) {
+      // Cache hit: pula a IA. A montagem dos itens abaixo roda igual, então a
+      // categoria é re-resolvida (matchCategory) contra as categorias ATUAIS do
+      // workspace, não as de quando o documento foi lido.
+      extracted = cached.extracted;
+      raw = cached.raw;
+      onProgress(1, 1);
+    } else if (source === 'PDF' || source === 'IMAGE') {
       // Fraciona PDFs grandes em chunks de páginas (melhora a leitura e evita
       // truncar a resposta); imagens/PDFs pequenos seguem em chamada única.
       const result = await extractDocumentChunked(
@@ -328,6 +356,13 @@ export async function processExtractBatch(
 
     if (extracted.length === 0) {
       throw BadRequest('Nenhuma transação foi reconhecida no documento.');
+    }
+
+    // Guarda só a extração nova e bem-sucedida (não-vazia). Não recacheia um hit
+    // nem regrava em erro (o throw acima já saiu). TTL longo (7 dias) p/ não
+    // perder o processamento de um doc lido mas ainda não importado.
+    if (!cached) {
+      await cache.set<CachedExtraction>(cacheKey, { extracted, raw }, env.EXTRACTION_CACHE_TTL_SECONDS);
     }
 
     // Idempotência: reprocessar (retry/FAILED) não acumula itens. Nesta etapa o

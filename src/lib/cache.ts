@@ -1,4 +1,5 @@
 import type { FastifyBaseLogger } from 'fastify';
+import pino from 'pino';
 import { env } from '../env';
 
 /**
@@ -281,11 +282,59 @@ export async function createCache(log: FastifyBaseLogger): Promise<Cache> {
   return withNamespace(new MemoryCache(env.CACHE_MAX_MEMORY_ENTRIES));
 }
 
+/**
+ * Cache compartilhado em nível de processo, para contextos SEM Fastify (worker
+ * da fila de importação, extração inline no serviço). Usa o mesmo driver e o
+ * mesmo namespace (`ng:`) do `app.cache`, então uma chave gravada aqui é lida
+ * lá e vice-versa — no mesmo processo (API + worker in-process) ou entre o
+ * worker standalone e a API, quando ambos apontam para o mesmo Redis.
+ *
+ * Constrói o próprio logger Pino (não há `app.log` aqui). Mesma regra do resto
+ * do cache: best-effort — sem `REDIS_URL` cai para memória (não sobrevive a
+ * restart, mas reaproveita dentro do processo).
+ */
+let sharedCache: Promise<Cache> | null = null;
+
+export function getSharedCache(): Promise<Cache> {
+  if (!sharedCache) {
+    // Cast: o Pino é estruturalmente compatível com o FastifyBaseLogger que o
+    // createCache espera (usa só info/warn/error).
+    const log = pino({ level: env.LOG_LEVEL }) as unknown as FastifyBaseLogger;
+    sharedCache = createCache(log);
+  }
+  return sharedCache;
+}
+
+/** Fecha o cache compartilhado (chamado no shutdown dos entrypoints). */
+export async function closeSharedCache(): Promise<void> {
+  if (!sharedCache) return;
+  const cache = await sharedCache;
+  sharedCache = null;
+  await cache.close();
+}
+
 // --- Chaves de cache (centralizadas p/ produtor e invalidador concordarem) ---
 
 /** Associação (membership) de um usuário a um workspace. */
 export function memberCacheKey(workspaceId: string, userId: string): string {
   return `member:${workspaceId}:${userId}`;
+}
+
+/**
+ * Resultado da extração com IA de um documento, por workspace + provider/modelo
+ * + hash do conteúdo. Permite reaproveitar o processamento de um documento já
+ * lido (mesmo que o lote tenha sido descartado, ou o doc reenviado) sem repagar
+ * tokens. Escopo por workspace de propósito — não compartilha leitura de doc
+ * entre workspaces. O provider/modelo entram na chave porque a saída depende
+ * deles (trocar de modelo deve reprocessar).
+ */
+export function extractionCacheKey(
+  workspaceId: string,
+  provider: string,
+  model: string,
+  contentHash: string,
+): string {
+  return `extract:${workspaceId}:${provider}:${model}:${contentHash}`;
 }
 
 /** Prefixo de todas as memberships de um workspace (p/ invalidação em massa). */
