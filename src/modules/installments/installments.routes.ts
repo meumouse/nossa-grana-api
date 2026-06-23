@@ -372,6 +372,30 @@ export default async function installmentsRoutes(app: FastifyInstance): Promise<
     return reply.send({ plan });
   });
 
+  // Troca apenas a categoria do plano e propaga às parcelas — sem regenerar o
+  // quadro (preserva pagamentos, datas e faturas). Usado pela alteração em massa.
+  app.patch('/:id/category', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { categoryId } = z.object({ categoryId: z.string().nullable() }).parse(request.body);
+
+    const existing = await app.prisma.installmentPlan.findFirst({
+      where: { id, workspaceId: request.workspace!.id, deletedAt: null },
+      select: { id: true },
+    });
+    if (!existing) throw NotFound('Parcelamento não encontrado');
+
+    const plan = await app.prisma.$transaction(async (tx) => {
+      const updated = await tx.installmentPlan.update({ where: { id }, data: { categoryId } });
+      await tx.transaction.updateMany({
+        where: { installmentPlanId: id, deletedAt: null },
+        data: { categoryId },
+      });
+      return updated;
+    });
+
+    return reply.send({ plan });
+  });
+
   app.delete('/:id', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const existing = await app.prisma.installmentPlan.findFirst({
