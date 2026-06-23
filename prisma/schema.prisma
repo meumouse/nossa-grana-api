@@ -152,6 +152,7 @@ model Workspace {
   investmentAssets      InvestmentAsset[]
   activities            ActivityLog[]
   importBatches         ImportBatch[]
+  documents             Document[]
 }
 
 enum WorkspaceType {
@@ -804,6 +805,11 @@ model ImportBatch {
   source      ImportSource
   status      ImportStatus @default(PROCESSING)
 
+  // documento de origem (quando o arquivo foi persistido no storage). Um mesmo
+  // Document pode gerar vários ImportBatch (reimportar com IA depois).
+  documentId String?
+  document   Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+
   filename String?
   mimeType String?
   // chave do documento original em object storage (S3/R2); null quando o
@@ -827,6 +833,32 @@ model ImportBatch {
   deletedAt DateTime?
 
   @@index([workspaceId, status])
+  @@index([workspaceId, createdAt])
+  @@index([documentId])
+}
+
+// Documento persistido em object storage (S3/R2). Alimenta a página "Documentos":
+// arquivos enviados direto pelo usuário OU os anexados a uma importação por IA
+// (Extrato). Pode ser (re)importado com IA gerando ImportBatch — ver `document`.
+model Document {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdById String?
+
+  filename String
+  mimeType String
+  fileKey  String       // chave do objeto no storage (sempre presente)
+  fileSize Int
+  source   ImportSource // PDF | IMAGE | CSV | OFX
+  pageCount Int?        // nº de páginas estimado (PDFs)
+
+  importBatches ImportBatch[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
   @@index([workspaceId, createdAt])
 }
 

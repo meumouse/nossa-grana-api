@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
-import type { ImportSource } from '@prisma/client';
 import { BadRequest } from '../../lib/errors';
 import { requireRole } from '../../plugins/workspace';
+import { detectSource } from './source';
 import {
   cancelBatch,
   confirmBatch,
@@ -13,23 +13,6 @@ import {
   startExtraction,
 } from './imports.service';
 import { confirmSchema, listQuerySchema, patchItemSchema } from './imports.schemas';
-
-/** Descobre o tipo de fonte a partir do mime/extensão do arquivo enviado. */
-function detectSource(filename: string, mimeType: string): ImportSource {
-  const name = filename.toLowerCase();
-  if (mimeType === 'application/pdf' || name.endsWith('.pdf')) return 'PDF';
-  if (mimeType.startsWith('image/')) return 'IMAGE';
-  if (name.endsWith('.ofx') || /ofx|sgml/i.test(mimeType)) return 'OFX';
-  if (
-    name.endsWith('.csv') ||
-    mimeType === 'text/csv' ||
-    mimeType === 'application/vnd.ms-excel' ||
-    mimeType === 'text/plain'
-  ) {
-    return 'CSV';
-  }
-  throw BadRequest('Formato não suportado. Envie PDF, imagem, CSV ou OFX.');
-}
 
 export default async function importsRoutes(app: FastifyInstance): Promise<void> {
   // Upload + extração. Conta padrão opcional via query (?accountId=).

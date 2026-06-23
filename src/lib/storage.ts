@@ -63,7 +63,7 @@ function sanitizeName(name: string): string {
  */
 export function buildKey(parts: {
   workspaceId: string;
-  prefix: 'imports' | 'attachments';
+  prefix: 'imports' | 'attachments' | 'documents' | 'logos';
   ownerId: string;
   filename: string;
 }): string {

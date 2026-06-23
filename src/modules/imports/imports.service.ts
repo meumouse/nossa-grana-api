@@ -5,7 +5,7 @@ import { BadRequest, NotFound } from '../../lib/errors';
 import { enqueueConfirmImport, enqueueExtractImport } from '../../lib/queue';
 import { randomUUID } from '../../lib/tokens';
 import { getExtractor, resolveLlmConfig, type ExtractedTransaction } from '../../lib/llm';
-import { getDownloadUrl, getObject, isStorageEnabled } from '../../lib/storage';
+import { buildKey, getDownloadUrl, getObject, isStorageEnabled, putObject } from '../../lib/storage';
 import { createTransaction } from '../transactions/transactions.service';
 import { parseCsv, parseOfx, type ParsedRow } from './parsers';
 import type { confirmSchema, patchItemSchema } from './imports.schemas';
@@ -111,7 +111,7 @@ interface CreateBatchInput {
  * `/Type /Page` (e não `/Pages`) no conteúdo. É best-effort — só alimenta a
  * tela de confirmação ("dados do documento"); devolve null se não der p/ medir.
  */
-function estimatePdfPageCount(data: Buffer): number | null {
+export function estimatePdfPageCount(data: Buffer): number | null {
   try {
     const text = data.toString('latin1');
     const matches = text.match(/\/Type\s*\/Page[^s]/g);
@@ -141,6 +141,37 @@ export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatch
     select: { llmProvider: true, llmModel: true, llmApiKey: true },
   });
   const extractor = getExtractor(resolveLlmConfig(settings));
+  const pageCount = input.source === 'PDF' ? estimatePdfPageCount(input.data) : null;
+
+  // Persiste o arquivo no object storage (quando configurado) e registra um
+  // Document — é o que alimenta a página "Documentos" e permite reimportar com
+  // IA depois. Sem storage, o fluxo degrada: segue só com `fileData` no banco
+  // (a extração lê de lá) e o documento não fica disponível na listagem.
+  let fileKey: string | null = null;
+  let documentId: string | null = null;
+  if (isStorageEnabled) {
+    fileKey = buildKey({
+      workspaceId: ctx.workspaceId,
+      prefix: 'documents',
+      ownerId: ctx.userId,
+      filename: input.filename,
+    });
+    await putObject({ key: fileKey, body: input.data, contentType: input.mimeType });
+    const doc = await db.document.create({
+      data: {
+        workspaceId: ctx.workspaceId,
+        createdById: ctx.userId,
+        filename: input.filename,
+        mimeType: input.mimeType,
+        fileKey,
+        fileSize: input.data.length,
+        source: input.source,
+        pageCount,
+      },
+    });
+    documentId = doc.id;
+  }
+
   const batch = await db.importBatch.create({
     data: {
       workspaceId: ctx.workspaceId,
@@ -149,11 +180,13 @@ export async function createBatch(db: PrismaClient, ctx: Ctx, input: CreateBatch
       status: 'UPLOADED',
       filename: input.filename,
       mimeType: input.mimeType,
+      fileKey,
+      documentId,
       // Uint8Array novo: o Buffer do Node (ArrayBufferLike) não casa com o tipo
       // Bytes do Prisma (Uint8Array<ArrayBuffer>).
       fileData: new Uint8Array(input.data),
       fileSize: input.data.length,
-      pageCount: input.source === 'PDF' ? estimatePdfPageCount(input.data) : null,
+      pageCount,
       model: extractor.modelLabel,
     },
   });
