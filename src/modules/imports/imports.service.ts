@@ -411,6 +411,87 @@ export async function patchItem(
   });
 }
 
+type ReviewedItem = NonNullable<ConfirmInput['items']>[number];
+
+/**
+ * Persiste o estado revisado do lote num único passo (substitui os N PATCH por
+ * item que a tela de revisão fazia — fonte do "tempestade de requisições" em
+ * lotes grandes, que ainda estourava o rate-limit).
+ *
+ * Tudo é validado em memória contra conjuntos carregados de uma vez (sem N
+ * queries de assert) e gravado numa transação: zera os itens não importados para
+ * REJECTED e regrava os enviados como ACCEPTED. Atômico — ou entra tudo, ou nada.
+ */
+async function applyReviewedItems(
+  db: PrismaClient,
+  workspaceId: string,
+  batchId: string,
+  items: ReviewedItem[],
+) {
+  // Carrega de uma vez os ids válidos do workspace e os itens do lote, para
+  // validar o payload em memória (evita um assert por item/referência).
+  const [accounts, cards, cats, batchItems] = await Promise.all([
+    db.account.findMany({ where: { workspaceId, deletedAt: null }, select: { id: true } }),
+    db.creditCard.findMany({ where: { workspaceId, deletedAt: null }, select: { id: true } }),
+    db.category.findMany({ where: { workspaceId, deletedAt: null }, select: { id: true } }),
+    db.importItem.findMany({ where: { batchId }, select: { id: true, status: true } }),
+  ]);
+  const accountIds = new Set(accounts.map((a) => a.id));
+  const cardIds = new Set(cards.map((c) => c.id));
+  const categoryIds = new Set(cats.map((c) => c.id));
+  const itemById = new Map(batchItems.map((it) => [it.id, it]));
+
+  // Valida em memória e monta os updates (where + data) antes de abrir a transação.
+  const updates = items.map((it) => {
+    const existing = itemById.get(it.id);
+    if (!existing) throw BadRequest('Item de importação não encontrado neste lote.');
+    if (existing.status === 'IMPORTED') {
+      throw BadRequest(`O lançamento "${it.description}" já foi importado.`);
+    }
+    if (it.categoryId && !categoryIds.has(it.categoryId)) {
+      throw BadRequest('Categoria inválida para este workspace');
+    }
+    if (it.creditCardId && !cardIds.has(it.creditCardId)) {
+      throw BadRequest('Cartão inválido para este workspace');
+    }
+    if (it.accountId && !accountIds.has(it.accountId)) {
+      throw BadRequest('Conta inválida para este workspace');
+    }
+    // Dono é exclusivo (conta XOR cartão): o cartão prevalece quando ambos vierem.
+    const owner = it.creditCardId
+      ? { creditCardId: it.creditCardId, accountId: null }
+      : { accountId: it.accountId ?? null, creditCardId: null };
+    return {
+      id: it.id,
+      data: {
+        date: it.date,
+        description: it.description,
+        amount: it.amount,
+        type: it.type,
+        categoryId: it.categoryId ?? null,
+        ...owner,
+        status: 'ACCEPTED' as const,
+      },
+    };
+  });
+
+  // Zera o que não foi enviado (não-IMPORTED → REJECTED) e regrava os aceitos.
+  // Forma interativa com timeout folgado: lotes grandes (centenas de itens)
+  // levam mais que o default de 5s do Prisma.
+  await db.$transaction(
+    async (tx) => {
+      await tx.importItem.updateMany({
+        where: { batchId, status: { not: 'IMPORTED' } },
+        data: { status: 'REJECTED' },
+      });
+      for (const u of updates) {
+        await tx.importItem.update({ where: { id: u.id }, data: u.data });
+      }
+    },
+    { timeout: 30_000 },
+  );
+}
+
 /**
  * Confirma o lote.
  *
@@ -441,6 +522,12 @@ export async function confirmBatch(
   }
   if (input.defaultAccountId) await assertAccount(db, ctx.workspaceId, input.defaultAccountId);
   if (input.defaultCreditCardId) await assertCard(db, ctx.workspaceId, input.defaultCreditCardId);
+
+  // Payload único da revisão: grava o estado revisado de todos os itens de uma
+  // vez (substitui os N PATCH do front). Ausente = modo legado (já marcado).
+  if (input.items) {
+    await applyReviewedItems(db, ctx.workspaceId, batchId, input.items);
+  }
 
   const pending = await db.importItem.count({ where: { batchId, status: 'ACCEPTED' } });
   if (pending === 0) throw BadRequest('Nenhum item marcado para importar.');

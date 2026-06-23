@@ -81,7 +81,12 @@ export default async function importsRoutes(app: FastifyInstance): Promise<void>
     return { item };
   });
 
-  app.post('/:id/confirm', { preHandler: [requireRole('MEMBER')] }, async (request, reply) => {
+  // bodyLimit elevado: o confirm carrega todos os itens revisados num único
+  // payload (lotes grandes — centenas de transações — passam do default de 1MB).
+  app.post('/:id/confirm', {
+    preHandler: [requireRole('MEMBER')],
+    bodyLimit: 8 * 1024 * 1024,
+  }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = confirmSchema.parse(request.body ?? {});
     const result = await confirmBatch(
